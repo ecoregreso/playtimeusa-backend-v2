@@ -4,8 +4,9 @@
   "description": "Playtime USA backend v2 - Postgres/Sequelize funcoin engine",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+  "start": "node src/server.js",
+  "dev": "nodemon src/server.js",
+  "seed:agent": "node src/scripts/seedAgent.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
