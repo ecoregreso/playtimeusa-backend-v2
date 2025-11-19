@@ -1,127 +1,112 @@
 // src/services/betService.js
-const { sequelize, Player, Wallet, Bet, LedgerEntry } = require('../models');
-const { checkAndTriggerBonus } = require('./voucherService');
+// Core bet engine for FunCoin spins
 
-function simulateOutcome(stakeMinor) {
-  const r = Math.random();
-  if (r < 0.1) {
-    return {
-      winMinor: stakeMinor * 5,
-      outcome: 'WIN'
-    };
-  }
-  return {
-    winMinor: 0,
-    outcome: 'LOSE'
-  };
+const { sequelize, Player, Bet } = require('../models');
+
+/**
+ * Safely coerce a value to an integer minor-unit amount.
+ */
+function toMinorInt(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return NaN;
+  if (!Number.isInteger(n)) return NaN;
+  return n;
 }
 
-async function placeBet({ playerId, stakeMinor, gameCode }) {
-  if (!stakeMinor || stakeMinor <= 0) {
-    throw new Error('INVALID_STAKE');
+/**
+ * Place a bet for a player on a given game.
+ *
+ * Inputs:
+ *   - playerId: UUID of the player
+ *   - gameCode: string identifier for the game (e.g. "demo-slot-1")
+ *   - wagerMinor: integer in minor units (1 = 0.01 FunCoin)
+ *
+ * Rules:
+ *   - wagerMinor must be an integer
+ *   - wagerMinor must be >= 1 (0.01 FunCoin)
+ *   - wagerMinor must be <= player.balanceMinor
+ */
+async function placeBet({ playerId, gameCode, wagerMinor }) {
+  if (!playerId) {
+    throw new Error('PLAYER_REQUIRED');
   }
+
   if (!gameCode) {
-    throw new Error('GAME_CODE_REQUIRED');
+    throw new Error('GAME_REQUIRED');
+  }
+
+  const stake = toMinorInt(wagerMinor);
+
+  // Allow cent-level stakes: 1 minor unit = 0.01 FunCoin
+  if (!Number.isInteger(stake) || stake < 1) {
+    throw new Error('INVALID_STAKE');
   }
 
   return sequelize.transaction(async (t) => {
-    const player = await Player.findOne({
-      where: { id: playerId },
-      transaction: t
+    // Lock & load player row for this transaction
+    const player = await Player.findByPk(playerId, {
+      transaction: t,
+      lock: t.LOCK && t.LOCK.UPDATE ? t.LOCK.UPDATE : undefined,
     });
 
-    if (!player || player.status !== 'ACTIVE') {
-      throw new Error('PLAYER_NOT_ACTIVE');
+    if (!player) {
+      throw new Error('PLAYER_NOT_FOUND');
     }
 
-    if (player.bonusAckRequired) {
-      throw new Error('BONUS_ACK_REQUIRED');
+    if (stake > player.balanceMinor) {
+      throw new Error('INSUFFICIENT_FUNDS');
     }
 
-    const wallet = await Wallet.findOne({
-      where: { ownerType: 'PLAYER', ownerId: player.id },
-      transaction: t
-    });
+    const balanceBefore = player.balanceMinor;
 
-    if (!wallet) {
-      throw new Error('PLAYER_WALLET_NOT_FOUND');
+    // --- Simple demo RNG logic ---
+    // You can replace this later with a proper RTP-tuned engine.
+    const WIN_CHANCE = 0.45;     // 45% of spins win something
+    const MAX_MULTIPLIER = 5.0;  // up to 5x stake
+
+    let payoutMinor = 0;
+    let didWin = Math.random() < WIN_CHANCE;
+
+    if (didWin) {
+      // Random multiplier between 1x and MAX_MULTIPLIER (inclusive-ish), 2 decimal precision
+      const rawMult = 1 + Math.random() * (MAX_MULTIPLIER - 1);
+      const mult = Math.round(rawMult * 100) / 100;
+      payoutMinor = Math.floor(stake * mult);
     }
 
-    if (wallet.balanceMinor < stakeMinor) {
-      throw new Error('INSUFFICIENT_BALANCE');
-    }
+    // Update player balance: subtract stake, add payout
+    player.balanceMinor = player.balanceMinor - stake + payoutMinor;
+    await player.save({ transaction: t });
 
-    wallet.balanceMinor -= stakeMinor;
-
-    const { winMinor, outcome } = simulateOutcome(stakeMinor);
-
-    if (winMinor > 0) {
-      wallet.balanceMinor += winMinor;
-    }
-
-    await wallet.save({ transaction: t });
-
+    // Persist the bet record
     const bet = await Bet.create(
       {
         playerId: player.id,
         gameCode,
-        stakeMinor,
-        winMinor,
-        outcome
+        wagerMinor: stake,
+        payoutMinor,
       },
       { transaction: t }
     );
 
-    await LedgerEntry.create(
-      {
-        fromWalletId: wallet.id,
-        toWalletId: null,
-        amountMinor: stakeMinor,
-        type: 'BET_STAKE',
-        refType: 'bet',
-        refId: bet.id
-      },
-      { transaction: t }
-    );
-
-    if (winMinor > 0) {
-      await LedgerEntry.create(
-        {
-          fromWalletId: null,
-          toWalletId: wallet.id,
-          amountMinor: winMinor,
-          type: 'BET_WIN',
-          refType: 'bet',
-          refId: bet.id
-        },
-        { transaction: t }
-      );
-    }
-
-    let bonusTriggered = false;
-
-    const bonusResult = await checkAndTriggerBonus(player.id, t);
-    if (bonusResult) {
-      bonusTriggered = true;
-      await wallet.reload({ transaction: t });
-    }
-
-    if (wallet.balanceMinor === 0) {
-      player.status = 'CLOSED';
-      await player.save({ transaction: t });
-    }
+    // NOTE: jackpot + bonus progression can be plugged in here later
 
     return {
       betId: bet.id,
-      outcome,
-      stakeMinor,
-      winMinor,
-      balanceMinor: wallet.balanceMinor,
-      bonusTriggered
+      playerId: player.id,
+      gameCode,
+      wagerMinor: stake,
+      payoutMinor,
+      balanceBeforeMinor: balanceBefore,
+      balanceAfterMinor: player.balanceMinor,
+      balanceMinor: player.balanceMinor, // alias for convenience
+      bonusMovedMinor: 0,
+      jackpotsHit: [],
     };
   });
 }
 
 module.exports = {
-  placeBet
+  placeBet,
 };
+
