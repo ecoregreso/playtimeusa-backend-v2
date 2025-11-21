@@ -1,10 +1,11 @@
 // src/services/betService.js
-// Core bet engine for FunCoin spins
+// Core bet engine for FunCoin spins, using Wallet balances.
 
-const { sequelize, Player, Bet } = require('../models');
+const { sequelize, Player, Wallet, Bet } = require('../models');
 
 /**
  * Safely coerce a value to an integer minor-unit amount.
+ * 1 minor unit = 0.01 FunCoin
  */
 function toMinorInt(value) {
   const n = Number(value);
@@ -24,7 +25,7 @@ function toMinorInt(value) {
  * Rules:
  *   - wagerMinor must be an integer
  *   - wagerMinor must be >= 1 (0.01 FunCoin)
- *   - wagerMinor must be <= player.balanceMinor
+ *   - wagerMinor must be <= wallet.balanceMinor
  */
 async function placeBet({ playerId, gameCode, wagerMinor }) {
   if (!playerId) {
@@ -37,13 +38,20 @@ async function placeBet({ playerId, gameCode, wagerMinor }) {
 
   const stake = toMinorInt(wagerMinor);
 
+  // DEBUG: see what the service thinks the stake is
+  console.log('[BET_DEBUG_STAKE]', {
+    raw: wagerMinor,
+    parsed: stake,
+    type: typeof wagerMinor,
+  });
+
   // Allow cent-level stakes: 1 minor unit = 0.01 FunCoin
   if (!Number.isInteger(stake) || stake < 1) {
     throw new Error('INVALID_STAKE');
   }
 
   return sequelize.transaction(async (t) => {
-    // Lock & load player row for this transaction
+    // Lock & load player
     const player = await Player.findByPk(playerId, {
       transaction: t,
       lock: t.LOCK && t.LOCK.UPDATE ? t.LOCK.UPDATE : undefined,
@@ -53,43 +61,55 @@ async function placeBet({ playerId, gameCode, wagerMinor }) {
       throw new Error('PLAYER_NOT_FOUND');
     }
 
-    if (stake > player.balanceMinor) {
+    // Lock & load player's FUN wallet
+    const wallet = await Wallet.findOne({
+      where: {
+        ownerType: 'PLAYER',
+        ownerId: player.id,
+        currency: 'FUN',
+      },
+      transaction: t,
+      lock: t.LOCK && t.LOCK.UPDATE ? t.LOCK.UPDATE : undefined,
+    });
+
+    if (!wallet) {
+      throw new Error('WALLET_NOT_FOUND');
+    }
+
+    if (stake > wallet.balanceMinor) {
       throw new Error('INSUFFICIENT_FUNDS');
     }
 
-    const balanceBefore = player.balanceMinor;
+    const balanceBefore = wallet.balanceMinor;
 
     // --- Simple demo RNG logic ---
-    // You can replace this later with a proper RTP-tuned engine.
-    const WIN_CHANCE = 0.45;     // 45% of spins win something
-    const MAX_MULTIPLIER = 5.0;  // up to 5x stake
+    const WIN_CHANCE = 0.45; // 45% of spins win something
+    const MAX_MULTIPLIER = 5.0; // up to 5x stake
 
     let payoutMinor = 0;
-    let didWin = Math.random() < WIN_CHANCE;
+    const didWin = Math.random() < WIN_CHANCE;
 
     if (didWin) {
-      // Random multiplier between 1x and MAX_MULTIPLIER (inclusive-ish), 2 decimal precision
       const rawMult = 1 + Math.random() * (MAX_MULTIPLIER - 1);
       const mult = Math.round(rawMult * 100) / 100;
       payoutMinor = Math.floor(stake * mult);
     }
 
-    // Update player balance: subtract stake, add payout
-    player.balanceMinor = player.balanceMinor - stake + payoutMinor;
-    await player.save({ transaction: t });
+    // Update wallet balance: subtract stake, add payout
+    wallet.balanceMinor = wallet.balanceMinor - stake + payoutMinor;
+    await wallet.save({ transaction: t });
 
-    // Persist the bet record
+    // Persist the bet record (schema uses stakeMinor + winMinor + outcome)
     const bet = await Bet.create(
       {
         playerId: player.id,
         gameCode,
-        wagerMinor: stake,
-        payoutMinor,
+        stakeMinor: stake,
+        winMinor: payoutMinor,
+        outcome: payoutMinor > 0 ? 'WIN' : 'LOSE',
       },
       { transaction: t }
     );
-
-    // NOTE: jackpot + bonus progression can be plugged in here later
 
     return {
       betId: bet.id,
@@ -98,8 +118,8 @@ async function placeBet({ playerId, gameCode, wagerMinor }) {
       wagerMinor: stake,
       payoutMinor,
       balanceBeforeMinor: balanceBefore,
-      balanceAfterMinor: player.balanceMinor,
-      balanceMinor: player.balanceMinor, // alias for convenience
+      balanceAfterMinor: wallet.balanceMinor,
+      balanceMinor: wallet.balanceMinor,
       bonusMovedMinor: 0,
       jackpotsHit: [],
     };
@@ -109,4 +129,5 @@ async function placeBet({ playerId, gameCode, wagerMinor }) {
 module.exports = {
   placeBet,
 };
+
 
