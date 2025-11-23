@@ -4,21 +4,12 @@ const { placeBet } = require('../services/betService');
 async function spinHandler(req, res) {
   try {
     const playerId = req.user.playerId;
-
-    // Support both "wagerMinor" (preferred) and legacy "stakeMinor"
-    const { wagerMinor, stakeMinor, gameCode } = req.body;
-
-    if (!gameCode) {
-      return res.status(400).json({ ok: false, error: 'GAME_REQUIRED' });
-    }
-
-    const amountMinor =
-      typeof wagerMinor !== 'undefined' ? wagerMinor : stakeMinor;
+    const { stakeMinor, gameCode } = req.body;
 
     const result = await placeBet({
       playerId,
-      gameCode,
-      wagerMinor: amountMinor,
+      stakeMinor,
+      gameCode
     });
 
     res.json({ ok: true, result });
@@ -29,6 +20,5 @@ async function spinHandler(req, res) {
 }
 
 module.exports = {
-  spinHandler,
+  spinHandler
 };
-

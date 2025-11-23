@@ -1,0 +1,53 @@
+// src/constants/permissions.js
+
+const PERMISSIONS = {
+  TENANT_MANAGE: 'tenant:manage',
+  STAFF_MANAGE: 'staff:manage',
+  PLAYER_READ: 'player:read',
+  PLAYER_WRITE: 'player:write',
+  FINANCE_READ: 'finance:read',
+  FINANCE_WRITE: 'finance:write',
+  BET_LOG_READ: 'betlog:read',
+};
+
+const ROLES = {
+  OPERATOR: 'operator',
+  AGENT: 'agent',
+  SUB_AGENT: 'subagent',
+  CASHIER: 'cashier',
+};
+
+const ROLE_DEFAULT_PERMISSIONS = {
+  operator: [
+    PERMISSIONS.TENANT_MANAGE,
+    PERMISSIONS.STAFF_MANAGE,
+    PERMISSIONS.PLAYER_READ,
+    PERMISSIONS.PLAYER_WRITE,
+    PERMISSIONS.FINANCE_READ,
+    PERMISSIONS.FINANCE_WRITE,
+    PERMISSIONS.BET_LOG_READ,
+  ],
+  agent: [
+    PERMISSIONS.PLAYER_READ,
+    PERMISSIONS.PLAYER_WRITE,
+    PERMISSIONS.FINANCE_READ,
+    PERMISSIONS.FINANCE_WRITE,
+    PERMISSIONS.BET_LOG_READ,
+  ],
+  subagent: [
+    PERMISSIONS.PLAYER_READ,
+    PERMISSIONS.PLAYER_WRITE,
+    PERMISSIONS.FINANCE_READ,
+    PERMISSIONS.BET_LOG_READ,
+  ],
+  cashier: [
+    PERMISSIONS.PLAYER_READ,
+    PERMISSIONS.FINANCE_WRITE,
+  ],
+};
+
+module.exports = {
+  PERMISSIONS,
+  ROLES,
+  ROLE_DEFAULT_PERMISSIONS,
+};

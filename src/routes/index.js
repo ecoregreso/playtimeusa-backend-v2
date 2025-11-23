@@ -4,7 +4,8 @@ const router = express.Router();
 const voucherRoutes = require('./voucherRoutes');
 const playerRoutes = require('./playerRoutes');
 const betRoutes = require('./betRoutes');
-const adminRoutes = require('./adminRoutes'); // <- add this
+const adminRoutes = require('./adminRoutes'); const staffRoutes = require('./staffRoutes');
+// <- add this
 
 // Healthcheck
 router.get('/health', (req, res) => {
@@ -14,7 +15,8 @@ router.get('/health', (req, res) => {
 router.use('/voucher', voucherRoutes);
 router.use('/player', playerRoutes);
 router.use('/bet', betRoutes);
-router.use('/admin', adminRoutes); // <- and this
+router.use('/admin', adminRoutes); router.use('/staff', staffRoutes);
+// <- and this
 
 module.exports = router;
 
