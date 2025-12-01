@@ -1,45 +1,35 @@
 // src/models/index.js
-const { sequelize } = require('../config/database');
+const { Sequelize, DataTypes } = require('sequelize');
 
-const Tenant = require('./Tenant');
-const Wallet = require('./Wallet');
-const Player = require('./Player');
-const Voucher = require('./Voucher');
-const Bonus = require('./Bonus');
-const Bet = require('./Bet');
-const LedgerEntry = require('./LedgerEntry');
+const useSsl =
+  process.env.PGSSLMODE === 'require' ||
+  process.env.DB_USE_SSL === 'true' ||
+  process.env.DB_USE_SSL === '1';
 
-Tenant.hasMany(Player, { foreignKey: 'tenantId' });
-Player.belongsTo(Tenant, { foreignKey: 'tenantId' });
+console.log(
+  `[DB] Using Postgres via DATABASE_URL (${useSsl ? 'SSL enabled' : 'no SSL'})`
+);
 
-Voucher.belongsTo(Tenant, { foreignKey: 'tenantId' });
-Voucher.belongsTo(Player, {
-  foreignKey: 'playerUsedId',
-  as: 'playerUsed'
+const sequelize = new Sequelize(process.env.DATABASE_URL, {
+  dialect: 'postgres',
+  logging: false,
+  dialectOptions: useSsl
+    ? {
+        ssl: {
+          require: true,
+          rejectUnauthorized: false,
+        },
+      }
+    : {},
 });
 
-Bonus.belongsTo(Player, { foreignKey: 'playerId' });
-Bonus.belongsTo(Wallet, { foreignKey: 'walletId' });
-Bonus.belongsTo(Voucher, { foreignKey: 'sourceVoucherId' });
+const db = {};
 
-Bet.belongsTo(Player, { foreignKey: 'playerId' });
+db.sequelize = sequelize;
+db.Sequelize = Sequelize;
 
-LedgerEntry.belongsTo(Wallet, {
-  foreignKey: 'fromWalletId',
-  as: 'fromWallet'
-});
-LedgerEntry.belongsTo(Wallet, {
-  foreignKey: 'toWalletId',
-  as: 'toWallet'
-});
+// Models
+db.Voucher = require('./voucher')(sequelize, DataTypes);
+db.Player = require('./player')(sequelize, DataTypes);
 
-module.exports = {
-  sequelize,
-  Tenant,
-  Wallet,
-  Player,
-  Voucher,
-  Bonus,
-  Bet,
-  LedgerEntry
-};
+module.exports = db;

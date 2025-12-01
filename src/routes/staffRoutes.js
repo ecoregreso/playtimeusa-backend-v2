@@ -1,125 +1,150 @@
 // src/routes/staffRoutes.js
-
 const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const router = express.Router();
 
-const { authenticateStaff, createStaffUser } = require('../services/staffAuthService');
-const { requireStaffAuth } = require('../middleware/staffAuth');
-const { PERMISSIONS, ROLES } = require('../constants/permissions');
+const { StaffUser } = require('../models');
+const { requireStaffAuth, requireStaffRole } = require('../middleware/staffAuth');
 
-// POST /api/v1/staff/login
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+
+// Sign JWT for staff user
+function signStaffToken(staff) {
+  const payload = {
+    id: staff.id,
+    username: staff.username,
+    role: staff.role,
+  };
+
+  return jwt.sign(payload, JWT_SECRET, {
+    expiresIn: '12h',
+  });
+}
+
+// POST /api/v1/staff/login  (username + password)
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    if (!email || !password) {
-      return res.status(400).json({ ok: false, error: 'EMAIL_AND_PASSWORD_REQUIRED' });
+    const { username, password } = req.body || {};
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'username and password are required' });
     }
 
-    const result = await authenticateStaff({ email, password });
+    const staff = await StaffUser.findOne({ where: { username } });
+    if (!staff || !staff.isActive) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
-    return res.json({
-      ok: true,
-      token: result.token,
-      staff: result.staff,
+    const ok = await bcrypt.compare(password, staff.passwordHash);
+    if (!ok) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = signStaffToken(staff);
+
+    res.json({
+      token,
+      staff: {
+        id: staff.id,
+        username: staff.username,
+        role: staff.role,
+        agentCode: staff.agentCode,
+        parentId: staff.parentId,
+      },
     });
   } catch (err) {
-    console.error('staff login error', err);
-    if (err.code === 'INVALID_CREDENTIALS') {
-      return res.status(401).json({ ok: false, error: 'INVALID_CREDENTIALS' });
-    }
-    if (err.code === 'TENANT_INACTIVE') {
-      return res.status(403).json({ ok: false, error: 'TENANT_INACTIVE' });
-    }
-    return res.status(500).json({ ok: false, error: 'LOGIN_ERROR' });
+    console.error('[STAFF] login error:', err);
+    res.status(500).json({ error: 'Failed to login' });
   }
 });
 
 // GET /api/v1/staff/me
 router.get('/me', requireStaffAuth(), async (req, res) => {
-  return res.json({
-    ok: true,
-    staff: req.staff,
-  });
+  res.json({ staff: req.staff });
 });
 
-// POST /api/v1/staff/users  (operator / staff-manager only)
-router.post(
-  '/users',
-  requireStaffAuth([PERMISSIONS.STAFF_MANAGE]),
+// GET /api/v1/staff  (no cashiers)
+router.get(
+  '/',
+  requireStaffRole(['agent', 'operator', 'owner']),
   async (req, res) => {
     try {
-      const { role, email, password, displayName, permissions } = req.body || {};
-      const allowedRoles = Object.values(ROLES);
-
-      if (!role || !allowedRoles.includes(role)) {
-        return res.status(400).json({ ok: false, error: 'INVALID_ROLE' });
-      }
-      if (!email || !password) {
-        return res.status(400).json({ ok: false, error: 'EMAIL_AND_PASSWORD_REQUIRED' });
-      }
-
-      const staff = await createStaffUser({
-        tenantId: req.staff.tenantId,
-        role,
-        email,
-        password,
-        displayName,
-        permissions,
+      const staffUsers = await StaffUser.findAll({
+        order: [['createdAt', 'DESC']],
       });
 
-      return res.status(201).json({
-        ok: true,
-        staff: {
-          id: staff.id,
-          tenantId: staff.tenantId,
-          email: staff.email,
-          displayName: staff.displayName,
-          role: staff.role,
-          permissions: staff.permissions,
-        },
-      });
+      res.json(
+        staffUsers.map((u) => ({
+          id: u.id,
+          username: u.username,
+          role: u.role,
+          agentCode: u.agentCode,
+          parentId: u.parentId,
+          isActive: u.isActive,
+          createdAt: u.createdAt,
+        }))
+      );
     } catch (err) {
-      console.error('create staff user error', err);
-      if (err.name === 'SequelizeUniqueConstraintError') {
-        return res.status(400).json({ ok: false, error: 'EMAIL_ALREADY_EXISTS' });
-      }
-      return res.status(500).json({ ok: false, error: 'CREATE_STAFF_ERROR' });
+      console.error('[STAFF] list error:', err);
+      res.status(500).json({ error: 'Failed to list staff' });
     }
   }
 );
 
-// GET /api/v1/staff/users
-router.get(
-  '/users',
-  requireStaffAuth([PERMISSIONS.STAFF_MANAGE]),
+// POST /api/v1/staff  (create staff user)
+router.post(
+  '/',
+  requireStaffRole(['operator', 'owner']),
   async (req, res) => {
     try {
-      const { StaffUser } = require('../models');
+      const { username, password, role, agentCode, parentId, isActive } = req.body || {};
 
-      const staffList = await StaffUser.findAll({
-        where: { tenantId: req.staff.tenantId },
-        order: [['createdAt', 'DESC']],
-        attributes: [
-          'id',
-          'tenantId',
-          'email',
-          'displayName',
-          'role',
-          'permissions',
-          'isActive',
-          'createdAt',
-        ],
+      if (!username || !password) {
+        return res.status(400).json({ error: 'username and password are required' });
+      }
+
+      const normalizedRole = role || 'cashier';
+      const allowedRoles = ['cashier', 'agent', 'operator', 'owner'];
+      if (!allowedRoles.includes(normalizedRole)) {
+        return res.status(400).json({ error: 'Invalid role' });
+      }
+
+      if (normalizedRole === 'owner' && req.staff.role !== 'owner') {
+        return res.status(403).json({ error: 'Only owner can create owner accounts' });
+      }
+
+      const existing = await StaffUser.findOne({ where: { username } });
+      if (existing) {
+        return res.status(409).json({ error: 'username already taken' });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      const user = await StaffUser.create({
+        username,
+        passwordHash,
+        role: normalizedRole,
+        agentCode: agentCode || null,
+        parentId: parentId || null,
+        isActive: isActive !== undefined ? !!isActive : true,
       });
 
-      return res.json({
-        ok: true,
-        staff: staffList,
+      res.status(201).json({
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        agentCode: user.agentCode,
+        parentId: user.parentId,
+        isActive: user.isActive,
+        createdAt: user.createdAt,
       });
     } catch (err) {
-      console.error('list staff users error', err);
-      return res.status(500).json({ ok: false, error: 'LIST_STAFF_ERROR' });
+      console.error('[STAFF] create error:', err);
+      res.status(500).json({ error: 'Failed to create staff user' });
     }
   }
 );
 
 module.exports = router;
+

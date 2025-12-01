@@ -1,11 +1,7 @@
-// src/routes/playerRoutes.js
 const express = require('express');
 const router = express.Router();
 
-// Auth middleware (currently a no-op, but wired correctly)
-const auth = require('../middleware/auth');
-
-// Simple test route to prove player routes are working
+// Simple ping for debugging
 router.get('/ping', (req, res) => {
   res.json({
     ok: true,
@@ -14,5 +10,10 @@ router.get('/ping', (req, res) => {
   });
 });
 
-// Export the router
+// TEMP: list players for admin UI (stub)
+// Later: replace this with real DB query (e.g. Player.findAll())
+router.get('/', async (req, res) => {
+  res.json([]);
+});
+
 module.exports = router;

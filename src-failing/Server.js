@@ -6,6 +6,8 @@ const cors = require('cors');
 
 const { sequelize } = require('./models');
 const cashierRouter = require('./routes/cashier');
+const adminAuthRouter = require('./routes/adminAuth');
+const adminRouter = require('./routes/admin');
 
 const app = express();
 
@@ -16,6 +18,8 @@ app.use(express.urlencoded({ extended: true }));
 
 // Routes
 app.use('/api/cashier', cashierRouter);
+app.use('/api/auth/admin', adminAuthRouter);
+app.use('/api/admin', adminRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -38,7 +42,7 @@ const PORT = process.env.PORT || 3000;
     await sequelize.authenticate();
     console.log('[DB] Connected to Postgres');
 
-    // Dev mode: keep schemas in sync
+    // Dev mode: auto-sync models to DB schema
     await sequelize.sync({ alter: true });
     console.log('[DB] Synced models (alter)');
 
@@ -50,4 +54,3 @@ const PORT = process.env.PORT || 3000;
     process.exit(1);
   }
 })();
-

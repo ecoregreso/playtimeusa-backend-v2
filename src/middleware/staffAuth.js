@@ -1,24 +1,75 @@
 // src/middleware/staffAuth.js
+const jwt = require('jsonwebtoken');
+const { StaffUser } = require('../models');
 
-// TEMPORARY STAFF AUTH MIDDLEWARE
-// For now this just lets every request pass through.
-// We'll add real staff JWT / role checks once the server is fully running.
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
-function staffAuth(req, res, next) {
-  // console.log('Staff auth hit:', req.method, req.originalUrl);
-  next();
+function getTokenFromHeader(req) {
+  const auth = req.headers.authorization || req.headers.Authorization;
+  if (!auth) return null;
+  const parts = auth.split(' ');
+  if (parts.length !== 2) return null;
+  const [scheme, token] = parts;
+  if (!/^Bearer$/i.test(scheme)) return null;
+  return token;
 }
 
-// This matches routes that do: router.get('/me', requireStaffAuth(), ...)
 function requireStaffAuth() {
-  // In a real app you might accept options here.
-  // For now, just return the staffAuth middleware.
-  return staffAuth;
+  return async (req, res, next) => {
+    try {
+      const token = getTokenFromHeader(req);
+      if (!token) {
+        return res.status(401).json({ error: 'Staff auth required' });
+      }
+
+      let payload;
+      try {
+        payload = jwt.verify(token, JWT_SECRET);
+      } catch {
+        return res.status(401).json({ error: 'Invalid or expired token' });
+      }
+
+      const staff = await StaffUser.findByPk(payload.id);
+      if (!staff || !staff.isActive) {
+        return res.status(401).json({ error: 'Staff account inactive or missing' });
+      }
+
+      req.staff = {
+        id: staff.id,
+        username: staff.username,
+        role: staff.role,
+        agentCode: staff.agentCode,
+        parentId: staff.parentId,
+      };
+
+      next();
+    } catch (err) {
+      console.error('[AUTH] requireStaffAuth error:', err);
+      res.status(500).json({ error: 'Internal auth error' });
+    }
+  };
 }
 
-// Export in multiple ways so whatever staffRoutes expects is defined.
-module.exports = requireStaffAuth;               // require('../middleware/staffAuth')
-module.exports.requireStaffAuth = requireStaffAuth; // const { requireStaffAuth } = require('../middleware/staffAuth')
-module.exports.staffAuth = staffAuth;
-module.exports.authenticateStaff = staffAuth;
-module.exports.protectStaff = staffAuth;
+function requireStaffRole(roles) {
+  const allowed = Array.isArray(roles) ? roles : [roles];
+
+  return [
+    requireStaffAuth(),
+    (req, res, next) => {
+      if (!req.staff) {
+        return res.status(401).json({ error: 'Staff auth required' });
+      }
+
+      if (!allowed.includes(req.staff.role)) {
+        return res.status(403).json({ error: 'Insufficient role' });
+      }
+
+      next();
+    },
+  ];
+}
+
+module.exports = {
+  requireStaffAuth,
+  requireStaffRole,
+};
