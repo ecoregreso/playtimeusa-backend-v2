@@ -1,53 +1,82 @@
 // src/server.js
-require('dotenv').config();
+require("dotenv").config();
 
-const express = require('express');
-const cors = require('cors');
+const express = require("express");
+const cors = require("cors");
+const morgan = require("morgan");
+const reportsRoutes = require("./routes/reports");
 
-const { sequelize } = require('./models');
-const cashierRouter = require('./routes/cashier');
+// Route modules
+const authRoutes = require("./routes/auth");
+const walletRoutes = require("./routes/wallets");
+const voucherRoutes = require("./routes/vouchers");
+const adminPlayersRoutes = require("./routes/adminPlayers");
+const staffAuthRoutes = require("./routes/staffAuth");
+
+const PORT = process.env.PORT || 3000;
+const NODE_ENV = process.env.NODE_ENV || "development";
+const FRONTEND_ORIGIN =
+  process.env.FRONTEND_ORIGIN || "http://localhost:5173";
 
 const app = express();
 
+app.set("trust proxy", 1);
+
 // Middleware
-app.use(cors({ origin: '*' }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Routes
-app.use('/api/cashier', cashierRouter);
+// CORS
+app.use(
+  cors({
+    origin: FRONTEND_ORIGIN,
+    credentials: true,
+  })
+);
 
-// Health check
-app.get('/api/health', (req, res) => {
+// Logging
+if (NODE_ENV !== "test") {
+  app.use(
+    morgan("dev", {
+      skip: (req, res) => NODE_ENV === "production" && res.statusCode < 400,
+    })
+  );
+}
+
+// Healthcheck
+app.get("/health", (req, res) => {
   res.json({
-    status: 'ok',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-    env: process.env.NODE_ENV || 'development',
+    status: "ok",
+    env: NODE_ENV,
+    time: new Date().toISOString(),
   });
 });
 
-app.get('/health', (req, res) => {
-  res.send('OK');
+// Routes
+app.use("/auth", authRoutes);
+app.use("/wallets", walletRoutes);
+app.use("/vouchers", voucherRoutes);
+app.use("/admin/players", adminPlayersRoutes);
+app.use("/admin/reports", reportsRoutes);
+app.use("/api/v1/staff", staffAuthRoutes);
+
+// 404
+app.use((req, res, next) => {
+  if (res.headersSent) return next();
+  res.status(404).json({ error: "Not found" });
 });
 
-const PORT = process.env.PORT || 3000;
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error("[UNHANDLED ERROR]", err);
+  if (res.headersSent) return next(err);
+  res
+    .status(err.status || 500)
+    .json({ error: err.message || "Internal server error" });
+});
 
-(async () => {
-  try {
-    await sequelize.authenticate();
-    console.log('[DB] Connected to Postgres');
+app.listen(PORT, () => {
+  console.log(`[SERVER] Listening on port ${PORT} in ${NODE_ENV} mode`);
+});
 
-    // Dev mode: keep schemas in sync
-    await sequelize.sync({ alter: true });
-    console.log('[DB] Synced models (alter)');
-
-    app.listen(PORT, () => {
-      console.log(`[SERVER] Playtime backend v2 listening on port ${PORT}`);
-    });
-  } catch (err) {
-    console.error('[STARTUP] error:', err);
-    process.exit(1);
-  }
-})();
-
+module.exports = app;

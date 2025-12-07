@@ -1,35 +1,45 @@
 // src/models/index.js
-const { Sequelize, DataTypes } = require('sequelize');
+const { Sequelize } = require("sequelize");
 
-const useSsl =
-  process.env.PGSSLMODE === 'require' ||
-  process.env.DB_USE_SSL === 'true' ||
-  process.env.DB_USE_SSL === '1';
+const databaseUrl = process.env.DATABASE_URL;
 
-console.log(
-  `[DB] Using Postgres via DATABASE_URL (${useSsl ? 'SSL enabled' : 'no SSL'})`
-);
+if (!databaseUrl) {
+  console.error("[DB] Missing env DATABASE_URL");
+  process.exit(1);
+}
 
-const sequelize = new Sequelize(process.env.DATABASE_URL, {
-  dialect: 'postgres',
-  logging: false,
-  dialectOptions: useSsl
-    ? {
-        ssl: {
-          require: true,
-          rejectUnauthorized: false,
-        },
-      }
-    : {},
+const sequelize = new Sequelize(databaseUrl, {
+  dialect: "postgres",
+  logging: process.env.DB_LOGGING === "true" ? console.log : false,
+  dialectOptions: {
+    ssl: process.env.PGSSLMODE
+      ? { require: true, rejectUnauthorized: false }
+      : false,
+  },
 });
 
-const db = {};
+// These are class-based models that already bind themselves to sequelize
+// internally via Model.init(..., { sequelize })
+const User = require("./User");
+const Wallet = require("./Wallet");
+const Transaction = require("./Transaction");
+const Voucher = require("./Voucher");
+const GameRound = require("./GameRound");
 
-db.sequelize = sequelize;
-db.Sequelize = Sequelize;
+// StaffUser is a factory: (sequelize) => StaffUserModel
+const StaffUserFactory = require("./StaffUser");
+const StaffUser =
+  typeof StaffUserFactory === "function"
+    ? StaffUserFactory(sequelize)
+    : StaffUserFactory;
 
-// Models
-db.Voucher = require('./voucher')(sequelize, DataTypes);
-db.Player = require('./player')(sequelize, DataTypes);
-
-module.exports = db;
+module.exports = {
+  sequelize,
+  Sequelize,
+  User,
+  Wallet,
+  Transaction,
+  Voucher,
+  GameRound,
+  StaffUser,
+};

@@ -1,45 +1,34 @@
-// src/models/Wallet.js
 const { DataTypes } = require('sequelize');
-const { sequelize } = require('../config/database');
+const { sequelize } = require('../db');
+const User = require('./User');
 
-const Wallet = sequelize.define(
-  'Wallet',
-  {
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true
-    },
-    ownerType: {
-      type: DataTypes.ENUM('TENANT', 'PLAYER', 'JACKPOT'),
-      allowNull: false
-    },
-    ownerId: {
-      type: DataTypes.UUID,
-      allowNull: false
-    },
-    currency: {
-      type: DataTypes.STRING(8),
-      allowNull: false,
-      defaultValue: 'FUN'
-    },
-    balanceMinor: {
-      type: DataTypes.BIGINT,
-      allowNull: false,
-      defaultValue: 0
-    }
+const Wallet = sequelize.define('Wallet', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true,
   },
-  {
-    tableName: 'wallets',
-    timestamps: true,
-    underscored: true,
-    indexes: [
-      {
-        unique: true,
-        fields: ['owner_type', 'owner_id', 'currency']
-      }
-    ]
-  }
-);
+  balance: {
+    type: DataTypes.DECIMAL(18, 4),
+    allowNull: false,
+    defaultValue: 0,
+  },
+  currency: {
+    type: DataTypes.STRING(16),
+    allowNull: false,
+    defaultValue: 'FUN',
+  },
+}, {
+  tableName: 'wallets',
+  timestamps: true,
+});
+
+User.hasOne(Wallet, {
+  foreignKey: { name: 'userId', allowNull: false },
+  onDelete: 'CASCADE',
+});
+Wallet.belongsTo(User, {
+  foreignKey: { name: 'userId', allowNull: false },
+});
 
 module.exports = Wallet;

@@ -1,97 +1,107 @@
 // src/services/staffAuthService.js
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const { StaffUser } = require("../models");
+const {
+  ROLE_DEFAULT_PERMISSIONS,
+} = require("../constants/permissions");
 
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+const STAFF_JWT_SECRET =
+  process.env.STAFF_JWT_SECRET || process.env.JWT_SECRET;
+const STAFF_JWT_TTL = process.env.STAFF_JWT_TTL || "12h";
 
-const { StaffUser, Tenant } = require('../models');
-const { ROLE_DEFAULT_PERMISSIONS } = require('../constants/permissions');
+if (!STAFF_JWT_SECRET) {
+  console.warn(
+    "[STAFF_AUTH] No STAFF_JWT_SECRET configured; using JWT_SECRET or failing hard."
+  );
+}
 
-const JWT_SECRET = process.env.JWT_SECRET || 'development-secret-change-me';
-const STAFF_TOKEN_TTL = process.env.STAFF_JWT_TTL || '12h';
-
-function buildPermissions(role, explicit) {
-  if (Array.isArray(explicit) && explicit.length > 0) {
-    return explicit;
-  }
-  return ROLE_DEFAULT_PERMISSIONS[role] || [];
+function buildEffectivePermissions(staff) {
+  const base =
+    staff.permissions && staff.permissions.length
+      ? staff.permissions
+      : ROLE_DEFAULT_PERMISSIONS[staff.role] || [];
+  // Ensure uniqueness
+  return Array.from(new Set(base));
 }
 
 async function authenticateStaff({ email, password }) {
-  const trimmedEmail = String(email || '').trim().toLowerCase();
+  const normalizedEmail = (email || "").toLowerCase().trim();
+  if (!normalizedEmail || !password) {
+    throw new Error("Missing email or password");
+  }
 
   const staff = await StaffUser.findOne({
-    where: { email: trimmedEmail, isActive: true },
-    include: [
-      {
-        model: Tenant,
-        as: 'tenant',
-      },
-    ],
+    where: { email: normalizedEmail },
   });
 
   if (!staff) {
-    const err = new Error('Invalid credentials');
-    err.code = 'INVALID_CREDENTIALS';
-    throw err;
+    throw new Error("Invalid credentials");
   }
 
-  if (!staff.tenant || staff.tenant.status === 'suspended') {
-    const err = new Error('Tenant inactive or suspended');
-    err.code = 'TENANT_INACTIVE';
-    throw err;
+  if (!staff.isActive) {
+    throw new Error("Staff user is inactive");
   }
 
-  const ok = await bcrypt.compare(String(password || ''), staff.passwordHash);
+  const ok = await bcrypt.compare(password, staff.passwordHash);
   if (!ok) {
-    const err = new Error('Invalid credentials');
-    err.code = 'INVALID_CREDENTIALS';
-    throw err;
+    throw new Error("Invalid credentials");
   }
 
-  const perms = buildPermissions(staff.role, staff.permissions);
+  const perms = buildEffectivePermissions(staff);
 
   const payload = {
     sub: staff.id,
-    type: 'staff',
+    type: "staff",
     role: staff.role,
-    tenantId: staff.tenantId,
+    tenantId: staff.tenantId || null,
     perms,
   };
 
-  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: STAFF_TOKEN_TTL });
+  const token = jwt.sign(payload, STAFF_JWT_SECRET, {
+    expiresIn: STAFF_JWT_TTL,
+  });
 
   return {
     token,
     staff: {
       id: staff.id,
-      tenantId: staff.tenantId,
       email: staff.email,
       displayName: staff.displayName,
       role: staff.role,
+      tenantId: staff.tenantId,
       permissions: perms,
     },
   };
 }
 
 async function createStaffUser({
-  tenantId,
-  role,
   email,
   password,
+  role,
   displayName,
-  permissions,
+  tenantId = null,
+  permissions = null,
 }) {
-  const trimmedEmail = String(email || '').trim().toLowerCase();
+  const normalizedEmail = (email || "").toLowerCase().trim();
+  if (!normalizedEmail || !password || !role) {
+    throw new Error("Missing required fields for staff user");
+  }
 
-  const hash = await bcrypt.hash(String(password || ''), 10);
+  const hash = await bcrypt.hash(password, 10);
+
+  const effectivePerms =
+    permissions && permissions.length
+      ? permissions
+      : ROLE_DEFAULT_PERMISSIONS[role] || [];
 
   const staff = await StaffUser.create({
-    tenantId,
-    role,
-    email: trimmedEmail,
-    displayName: displayName || trimmedEmail,
+    email: normalizedEmail,
     passwordHash: hash,
-    permissions: buildPermissions(role, permissions),
+    role,
+    displayName,
+    tenantId,
+    permissions: effectivePerms,
   });
 
   return staff;

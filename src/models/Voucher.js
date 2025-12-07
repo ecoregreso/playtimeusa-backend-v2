@@ -1,65 +1,76 @@
 // src/models/Voucher.js
 const { DataTypes } = require('sequelize');
-const { sequelize } = require('../config/database');
+const { sequelize } = require('../db');
+const User = require('./User');
 
-const Voucher = sequelize.define(
-  'Voucher',
-  {
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true
-    },
-    tenantId: {
-      type: DataTypes.UUID,
-      allowNull: false
-    },
-    code: {
-      type: DataTypes.STRING(32),
-      allowNull: false,
-      unique: true
-    },
-    pinHash: {
-      type: DataTypes.STRING,
-      allowNull: false
-    },
-    amountMinor: {
-      type: DataTypes.BIGINT,
-      allowNull: false
-    },
-    bonusAmountMinor: {
-      type: DataTypes.BIGINT,
-      allowNull: false
-    },
-    totalCostMinor: {
-      type: DataTypes.BIGINT,
-      allowNull: false
-    },
-    status: {
-      type: DataTypes.ENUM('NEW', 'USED', 'EXPIRED', 'CANCELLED'),
-      allowNull: false,
-      defaultValue: 'NEW'
-    },
-    playerUsedId: {
-      type: DataTypes.UUID,
-      allowNull: true
-    },
-    prizeWheelEnabled: {
-      type: DataTypes.BOOLEAN,
-      allowNull: false,
-      defaultValue: false
-    },
-    prizeWheelSpun: {
-      type: DataTypes.BOOLEAN,
-      allowNull: false,
-      defaultValue: false
-    }
+const Voucher = sequelize.define('Voucher', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true,
   },
-  {
-    tableName: 'vouchers',
-    timestamps: true,
-    underscored: true
-  }
-);
+  code: {
+    type: DataTypes.STRING(32),
+    allowNull: false,
+    unique: true,
+  },
+  pin: {
+    type: DataTypes.STRING(16),
+    allowNull: false,
+  },
+  amount: {
+    type: DataTypes.DECIMAL(18, 4),
+    allowNull: false,
+  },
+  bonusAmount: {
+    type: DataTypes.DECIMAL(18, 4),
+    allowNull: false,
+    defaultValue: 0,
+  },
+  currency: {
+    type: DataTypes.STRING(16),
+    allowNull: false,
+    defaultValue: 'FUN',
+  },
+  // simple string, no Postgres enum nonsense
+  status: {
+    type: DataTypes.STRING(16),
+    allowNull: false,
+    defaultValue: 'new', // new | redeemed | cancelled | expired
+  },
+  redeemedAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  expiresAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  metadata: {
+    type: DataTypes.JSON,
+    allowNull: true,
+  },
+}, {
+  tableName: 'vouchers',
+  timestamps: true,
+});
+
+// created by staff
+User.hasMany(Voucher, {
+  foreignKey: { name: 'createdByUserId', allowNull: true },
+});
+Voucher.belongsTo(User, {
+  as: 'createdBy',
+  foreignKey: { name: 'createdByUserId', allowNull: true },
+});
+
+// redeemed by player
+User.hasMany(Voucher, {
+  foreignKey: { name: 'redeemedByUserId', allowNull: true },
+});
+Voucher.belongsTo(User, {
+  as: 'redeemedBy',
+  foreignKey: { name: 'redeemedByUserId', allowNull: true },
+});
 
 module.exports = Voucher;

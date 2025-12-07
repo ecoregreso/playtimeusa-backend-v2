@@ -1,24 +1,30 @@
 // src/constants/permissions.js
 
-const PERMISSIONS = {
-  TENANT_MANAGE: 'tenant:manage',
-  STAFF_MANAGE: 'staff:manage',
-  PLAYER_READ: 'player:read',
-  PLAYER_WRITE: 'player:write',
-  FINANCE_READ: 'finance:read',
-  FINANCE_WRITE: 'finance:write',
-  BET_LOG_READ: 'betlog:read',
-};
-
+// High-level roles for staff users
 const ROLES = {
-  OPERATOR: 'operator',
-  AGENT: 'agent',
-  SUB_AGENT: 'subagent',
-  CASHIER: 'cashier',
+  OPERATOR: "operator",
+  AGENT: "agent",
+  SUB_AGENT: "subagent",
+  CASHIER: "cashier",
 };
 
+// Fine-grained permissions
+const PERMISSIONS = {
+  TENANT_MANAGE: "tenant:manage",
+  STAFF_MANAGE: "staff:manage",
+
+  PLAYER_READ: "player:read",
+  PLAYER_WRITE: "player:write",
+
+  FINANCE_READ: "finance:read",
+  FINANCE_WRITE: "finance:write",
+
+  BET_LOG_READ: "betlog:read",
+};
+
+// Default permissions per role
 const ROLE_DEFAULT_PERMISSIONS = {
-  operator: [
+  [ROLES.OPERATOR]: [
     PERMISSIONS.TENANT_MANAGE,
     PERMISSIONS.STAFF_MANAGE,
     PERMISSIONS.PLAYER_READ,
@@ -27,27 +33,27 @@ const ROLE_DEFAULT_PERMISSIONS = {
     PERMISSIONS.FINANCE_WRITE,
     PERMISSIONS.BET_LOG_READ,
   ],
-  agent: [
+  [ROLES.AGENT]: [
     PERMISSIONS.PLAYER_READ,
     PERMISSIONS.PLAYER_WRITE,
     PERMISSIONS.FINANCE_READ,
     PERMISSIONS.FINANCE_WRITE,
     PERMISSIONS.BET_LOG_READ,
   ],
-  subagent: [
+  [ROLES.SUB_AGENT]: [
     PERMISSIONS.PLAYER_READ,
     PERMISSIONS.PLAYER_WRITE,
     PERMISSIONS.FINANCE_READ,
-    PERMISSIONS.BET_LOG_READ,
+    PERMISSIONS.FINANCE_WRITE,
   ],
-  cashier: [
+  [ROLES.CASHIER]: [
     PERMISSIONS.PLAYER_READ,
     PERMISSIONS.FINANCE_WRITE,
   ],
 };
 
 module.exports = {
-  PERMISSIONS,
   ROLES,
+  PERMISSIONS,
   ROLE_DEFAULT_PERMISSIONS,
 };

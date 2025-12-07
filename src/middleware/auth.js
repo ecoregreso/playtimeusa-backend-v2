@@ -1,34 +1,74 @@
-// src/middleware/auth.js
+const jwt = require('jsonwebtoken');
 
-// TEMPORARY SIMPLE AUTH MIDDLEWARE
-// Right now this just lets every request through.
-// We'll upgrade this later to verify JWTs and roles.
+const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
+const ADMIN_SECRET = process.env.JWT_SECRET;
 
-function auth(req, res, next) {
-  // console.log('Auth middleware hit:', req.method, req.originalUrl);
-  next();
+function extractToken(req) {
+  const header = req.headers.authorization || '';
+  if (header.startsWith('Bearer ')) {
+    return header.slice(7);
+  }
+  return null;
 }
 
-// Export in MANY ways so whatever the routes expect is defined.
-module.exports = auth;                 // require('../middleware/auth')
-module.exports.auth = auth;            // const { auth } = require('../middleware/auth')
-module.exports.authMiddleware = auth;  // const { authMiddleware } = require('../middleware/auth')
-module.exports.authenticate = auth;    // const { authenticate } = require('../middleware/auth')
-module.exports.authenticatePlayer = auth; // const { authenticatePlayer } = require('../middleware/auth')
-module.exports.protect = auth;         // const { protect } = require('../middleware/auth')
-// src/middleware/auth.js
+function requireAuth(req, res, next) {
+  const token = extractToken(req);
+  if (!token) {
+    return res.status(401).json({ error: 'Missing Authorization header' });
+  }
 
-// TEMPORARY SIMPLE AUTH MIDDLEWARE
-// Right now this just lets every request through.
-// We'll upgrade this later to verify JWTs and roles.
-
-function auth(req, res, next) {
-  // You can log something for debugging if you want:
-  // console.log('Auth middleware hit:', req.method, req.originalUrl);
-  next();
+  try {
+    const payload = jwt.verify(token, ACCESS_SECRET);
+    if (payload.type !== 'access') {
+      return res.status(401).json({ error: 'Invalid token type' });
+    }
+    req.user = {
+      id: payload.sub,
+      role: payload.role,
+    };
+    next();
+  } catch (err) {
+    console.error('[AUTH] Access token error:', err.message);
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
 }
 
-// Export in multiple ways so routes can use it however they were written
-module.exports = auth;      // if they do: const auth = require('../middleware/auth')
-module.exports.auth = auth; // if they do: const { auth } = require('../middleware/auth');
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden: insufficient role' });
+    }
+    next();
+  };
+}
 
+function requireAdminToken(req, res, next) {
+  const token = extractToken(req);
+  if (!token) {
+    return res.status(401).json({ error: 'Missing Authorization header' });
+  }
+
+  try {
+    const payload = jwt.verify(token, ADMIN_SECRET);
+    if (payload.type !== 'admin') {
+      return res.status(401).json({ error: 'Invalid admin token type' });
+    }
+    req.admin = {
+      id: payload.sub,
+      role: payload.role,
+    };
+    next();
+  } catch (err) {
+    console.error('[AUTH] Admin token error:', err.message);
+    return res.status(401).json({ error: 'Invalid or expired admin token' });
+  }
+}
+
+module.exports = {
+  requireAuth,
+  requireRole,
+  requireAdminToken,
+};
