@@ -68,7 +68,13 @@ router.get(
         limit,
       });
 
-      return res.json(vouchers);
+      // Normalize status casing for front-end filters
+      const normalized = vouchers.map((v) => ({
+        ...v.toJSON(),
+        status: String(v.status || "").toLowerCase(),
+      }));
+
+      return res.json(normalized);
     } catch (err) {
       console.error("[VOUCHERS] GET / error:", err);
       return res.status(500).json({ error: "Failed to list vouchers" });
@@ -92,24 +98,19 @@ router.post(
         return res.status(400).json({ error: "Invalid amount" });
       }
 
-      const finalCurrency = currency || "FUN";
-
-      const code = randomAlphaNum(10);     // voucher code for system
+      const code = randomAlphaNum(6);      // keep within column limit
       const pin = randomNumeric(6);        // PIN for security
-      const userCode = randomNumeric(6);   // shorter "user-facing code"
+      const userCode = randomNumeric(6);   // for UI display only (not stored)
+      const totalCredit = valueAmount + valueBonus;
 
       const voucher = await Voucher.create({
         code,
         pin,
         amount: valueAmount,
         bonusAmount: valueBonus,
-        currency: finalCurrency,
-        status: "new",
-        metadata: {
-          userCode,
-          source: "admin_panel",
-        },
-        createdByUserId: req.user.id,
+        totalCredit,
+        status: "NEW",
+        createdBy: req.staff?.id || null,
       });
 
       let qrPath = null;
@@ -119,8 +120,11 @@ router.post(
         console.error("[VOUCHERS] QR generation failed:", qrErr);
       }
 
-      return res.status(201).json({
-        voucher,
+      const response = {
+        voucher: {
+          ...voucher.toJSON(),
+          status: "new", // front-end expects lowercase
+        },
         pin,       // for operator printing / handoff
         userCode,  // explicit top-level
         qr: qrPath
@@ -128,7 +132,9 @@ router.post(
               path: qrPath,
             }
           : null,
-      });
+      };
+
+      return res.status(201).json(response);
     } catch (err) {
       console.error("[VOUCHERS] POST / error:", err);
       return res.status(500).json({ error: "Failed to create voucher" });
