@@ -78,11 +78,18 @@ app.get("/health", (req, res) => {
 });
 
 // Routes
+// Backward-compatible mounts (no prefix)
 app.use("/auth", authRoutes);
 app.use("/wallets", walletRoutes);
 app.use("/vouchers", voucherRoutes);
 app.use("/admin/players", adminPlayersRoutes);
 app.use("/admin/reports", reportsRoutes);
+// Preferred v1 API mounts
+app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/wallets", walletRoutes);
+app.use("/api/v1/vouchers", voucherRoutes);
+app.use("/api/v1/admin/players", adminPlayersRoutes);
+app.use("/api/v1/admin/reports", reportsRoutes);
 app.use("/api/v1/staff", staffAuthRoutes);
 
 // 404
