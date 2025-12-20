@@ -15,8 +15,24 @@ const staffAuthRoutes = require("./routes/staffAuth");
 
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
-const FRONTEND_ORIGIN =
-  process.env.FRONTEND_ORIGIN || "http://localhost:5173";
+/**
+ * CORS origin list
+ * - FRONTEND_ORIGIN supports comma-separated origins
+ * - CORS_ORIGINS is accepted as a fallback
+ * - DEFAULT_ORIGINS covers the common dev ports
+ */
+const DEFAULT_ORIGINS = ["http://localhost:5173", "http://localhost:5174"];
+const FRONTEND_ORIGINS_RAW = (
+  process.env.FRONTEND_ORIGIN ||
+  process.env.CORS_ORIGINS ||
+  DEFAULT_ORIGINS.join(",")
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const ALLOW_ALL = FRONTEND_ORIGINS_RAW.includes("*");
+const FRONTEND_ORIGINS = [...new Set(FRONTEND_ORIGINS_RAW.filter((x) => x !== "*"))];
 
 const app = express();
 
@@ -29,7 +45,16 @@ app.use(express.urlencoded({ extended: true }));
 // CORS
 app.use(
   cors({
-    origin: FRONTEND_ORIGIN,
+    origin: (origin, cb) => {
+      // No origin usually means server-to-server, curl, postman
+      if (!origin) return cb(null, true);
+
+      if (ALLOW_ALL) return cb(null, true);
+
+      if (FRONTEND_ORIGINS.includes(origin)) return cb(null, true);
+
+      return cb(new Error(`Not allowed by CORS: ${origin}`));
+    },
     credentials: true,
   })
 );
