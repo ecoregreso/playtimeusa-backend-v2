@@ -2,10 +2,21 @@
 const express = require("express");
 const { Op } = require("sequelize");
 const { requireAuth, requireRole } = require("../middleware/auth");
+const { staffAuth } = require("../middleware/staffAuth");
 const { Voucher, Wallet, Transaction, User } = require("../models");
 const { generateVoucherQrPng } = require("../utils/qr");
 
 const router = express.Router();
+
+function requireStaffRole(...roles) {
+  return (req, res, next) => {
+    if (!req.staff) return res.status(401).json({ error: "Not authenticated" });
+    if (!roles.includes(req.staff.role)) {
+      return res.status(403).json({ error: "Forbidden: insufficient role" });
+    }
+    next();
+  };
+}
 
 function randomAlphaNum(length) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -43,8 +54,8 @@ async function getOrCreateWallet(userId, currency = "FUN") {
 // GET /vouchers (admin) – list latest vouchers
 router.get(
   "/",
-  requireAuth,
-  requireRole("admin"),
+  staffAuth,
+  requireStaffRole("owner", "operator", "agent"),
   async (req, res) => {
     try {
       const limit = Math.min(
@@ -68,8 +79,8 @@ router.get(
 // POST /vouchers (admin) – create voucher + PIN + userCode + QR
 router.post(
   "/",
-  requireAuth,
-  requireRole("admin"),
+  staffAuth,
+  requireStaffRole("owner", "operator", "agent"),
   async (req, res) => {
     try {
       const { amount, bonusAmount, currency } = req.body;
