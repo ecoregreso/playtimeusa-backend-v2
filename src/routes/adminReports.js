@@ -3,13 +3,7 @@ const express = require("express");
 const router = express.Router();
 const { Op, fn, col, literal } = require("sequelize");
 
-const {
-  sequelize,
-  User,
-  Voucher,
-  Transaction,
-  GameRound,
-} = require("../models");
+const { sequelize, User, Voucher, Transaction, GameRound } = require("../models");
 
 const { requireStaffAuth, PERMISSIONS } = require("../middleware/staffAuth");
 
@@ -136,14 +130,14 @@ router.get(
             },
           },
           attributes: [
-            "gameCode",
+            ["gameId", "gameId"],
             [fn("COUNT", literal("*")), "rounds"],
-            [fn("COUNT", fn("DISTINCT", col("userId"))), "uniquePlayers"],
+            [fn("COUNT", fn("DISTINCT", col("playerId"))), "uniquePlayers"],
             [fn("SUM", col("betAmount")), "totalBet"],
             [fn("SUM", col("winAmount")), "totalWin"],
-            [fn("SUM", col("net")), "ggr"],
+            [literal('SUM("betAmount" - "winAmount")'), "ggr"],
           ],
-          group: ["gameCode"],
+          group: ["gameId"],
         }).catch((err) => {
           console.warn(
             "[REPORTS] GameRound aggregate failed (adjust columns if needed):",
@@ -229,7 +223,7 @@ router.get(
       // If GameRound model exists and found anything, add those players too
       if (Array.isArray(gameRoundsAgg) && gameRoundsAgg.length > 0) {
         // We don't have per-row userId here, so we approximate activeFromGames later.
-        // If you want exact, you can add another query by GameRound.userId.
+        // If you want exact, you can add another query by GameRound.playerId.
       }
 
       // A more accurate "active from games" query:
@@ -240,7 +234,7 @@ router.get(
             [Op.lt]: endDateExclusive,
           },
         },
-        attributes: [[fn("DISTINCT", col("userId")), "userId"]],
+        attributes: [[fn("DISTINCT", col("playerId")), "playerId"]],
       }).catch((err) => {
         console.warn(
           "[REPORTS] GameRound active players query failed:",
@@ -251,7 +245,7 @@ router.get(
 
       let activeFromGames = 0;
       for (const row of gamePlayersRaw) {
-        const id = row.get("userId");
+        const id = row.get("playerId");
         if (id) {
           activeSet.add(String(id));
           activeFromGames++;
@@ -271,6 +265,21 @@ router.get(
         count: Number(t.get("count") || 0),
         totalAmount: Number(t.get("totalAmount") || 0),
       }));
+
+      const creditTypes = [
+        "credit",
+        "voucher_credit",
+        "game_win",
+        "manual_adjustment",
+      ];
+      const debitTypes = ["debit", "voucher_debit", "game_bet"];
+
+      const totalCredits = byType
+        .filter((t) => creditTypes.includes(t.type))
+        .reduce((sum, t) => sum + t.totalAmount, 0);
+      const totalDebits = byType
+        .filter((t) => debitTypes.includes(t.type))
+        .reduce((sum, t) => sum + t.totalAmount, 0);
 
       // Best-effort game GGR from GameRound aggregation
       let ggrTotal = 0;
@@ -302,7 +311,7 @@ router.get(
       // --- GAMES BY GAME ---
 
       const gamesByGame = (gameRoundsAgg || []).map((g) => ({
-        game: g.gameCode,
+        game: g.get("gameId") || g.gameId,
         rounds: Number(g.get("rounds") || 0),
         uniquePlayers: Number(g.get("uniquePlayers") || 0),
         totalBet: Number(g.get("totalBet") || 0),
@@ -315,12 +324,25 @@ router.get(
         ggr: ggrTotal,
       };
 
-      const result = {
+      const summary = {
+        totalVoucherAmount: issuedStats.totalAmount,
+        totalVoucherBonus: issuedStats.totalBonus,
+        totalCredits,
+        totalDebits,
+        totalBetAmount: txAggregates.gameBetTotal,
+        totalWinAmount: txAggregates.gameWinTotal,
+        grossGamingRevenue: ggrTotal,
+        netCashflow: totalCredits - totalDebits,
+      };
+
+      res.json({
+        ok: true,
         period: {
           start,
           end,
           label: `${start} → ${end}`,
         },
+        summary,
         vouchers: {
           issued: issuedStats,
           redeemed: redeemedStats,
@@ -332,12 +354,10 @@ router.get(
           byType,
         },
         games: gamesBlock,
-      };
-
-      res.json(result);
+      });
     } catch (err) {
       console.error("[ADMIN_REPORTS_RANGE] error:", err);
-      res.status(500).json({ error: "Failed to build range report" });
+      res.status(500).json({ ok: false, error: "Failed to build range report" });
     }
   }
 );

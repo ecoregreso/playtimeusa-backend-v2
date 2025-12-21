@@ -18,15 +18,6 @@ function requireStaffRole(...roles) {
   };
 }
 
-function randomAlphaNum(length) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let out = "";
-  for (let i = 0; i < length; i++) {
-    out += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return out;
-}
-
 function randomNumeric(length) {
   let out = "";
   for (let i = 0; i < length; i++) {
@@ -98,24 +89,37 @@ router.post(
         return res.status(400).json({ error: "Invalid amount" });
       }
 
-      const code = randomAlphaNum(6);      // keep within column limit
-      const pin = randomNumeric(6);        // PIN for security
-      const userCode = randomNumeric(6);   // for UI display only (not stored)
+      // Keep voucher code numeric so players can log in with the visible userCode
+      const code = randomNumeric(6);
+      const pin = randomNumeric(6);
+      const userCode = code; // mirrors code; not stored separately
       const totalCredit = valueAmount + valueBonus;
 
-      const voucher = await Voucher.create({
-        code,
-        pin,
-        amount: valueAmount,
-        bonusAmount: valueBonus,
-        totalCredit,
-        status: "NEW",
-        createdBy: req.staff?.id || null,
-      });
+      // Retry a few times to avoid rare collision on the unique constraint
+      let voucher;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          voucher = await Voucher.create({
+            code: attempt === 0 ? code : randomNumeric(6),
+            pin,
+            amount: valueAmount,
+            bonusAmount: valueBonus,
+            totalCredit,
+            status: "new",
+            createdBy: req.staff?.id || null,
+          });
+          break;
+        } catch (err) {
+          if (err.name === "SequelizeUniqueConstraintError" && attempt < 4) {
+            continue;
+          }
+          throw err;
+        }
+      }
 
       let qrPath = null;
       try {
-        qrPath = await generateVoucherQrPng({ code, pin, userCode });
+        qrPath = await generateVoucherQrPng({ code: voucher.code, pin, userCode });
       } catch (qrErr) {
         console.error("[VOUCHERS] QR generation failed:", qrErr);
       }

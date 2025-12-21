@@ -4,7 +4,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
-const reportsRoutes = require("./routes/reports");
+const reportsRoutes = require("./routes/adminReports");
 
 // Route modules
 const authRoutes = require("./routes/auth");
@@ -12,6 +12,12 @@ const walletRoutes = require("./routes/wallets");
 const voucherRoutes = require("./routes/vouchers");
 const adminPlayersRoutes = require("./routes/adminPlayers");
 const staffAuthRoutes = require("./routes/staffAuth");
+const adminStaffRoutes = require("./routes/adminStaff");
+const adminTransactionsRoutes = require("./routes/adminTransactions");
+const adminSessionsRoutes = require("./routes/adminSessions");
+const adminAuditRoutes = require("./routes/adminAudit");
+const financeRoutes = require("./routes/finance");
+const playerRoutes = require("./routes/playerRoutes");
 
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
@@ -84,6 +90,13 @@ app.use("/wallets", walletRoutes);
 app.use("/vouchers", voucherRoutes);
 app.use("/admin/players", adminPlayersRoutes);
 app.use("/admin/reports", reportsRoutes);
+app.use("/admin/staff", adminStaffRoutes);
+app.use("/admin/transactions", adminTransactionsRoutes);
+app.use("/admin/sessions", adminSessionsRoutes);
+app.use("/admin/audit", adminAuditRoutes);
+app.use("/player", playerRoutes);
+app.use("/deposits", financeRoutes);
+app.use("/withdrawals", financeRoutes);
 // Preferred v1 API mounts
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/wallets", walletRoutes);
@@ -91,6 +104,12 @@ app.use("/api/v1/vouchers", voucherRoutes);
 app.use("/api/v1/admin/players", adminPlayersRoutes);
 app.use("/api/v1/admin/reports", reportsRoutes);
 app.use("/api/v1/staff", staffAuthRoutes);
+app.use("/api/v1/admin/staff", adminStaffRoutes);
+app.use("/api/v1/admin/transactions", adminTransactionsRoutes);
+app.use("/api/v1/admin/sessions", adminSessionsRoutes);
+app.use("/api/v1/admin/audit", adminAuditRoutes);
+app.use("/api/v1/player", playerRoutes);
+app.use("/api/v1", financeRoutes);
 
 // 404
 app.use((req, res, next) => {

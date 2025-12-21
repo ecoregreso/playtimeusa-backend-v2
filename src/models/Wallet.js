@@ -24,10 +24,12 @@ const Wallet = sequelize.define('Wallet', {
 });
 
 User.hasOne(Wallet, {
+  as: 'wallet',
   foreignKey: { name: 'userId', allowNull: false },
   onDelete: 'CASCADE',
 });
 Wallet.belongsTo(User, {
+  as: 'user',
   foreignKey: { name: 'userId', allowNull: false },
 });
 

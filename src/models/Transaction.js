@@ -47,10 +47,12 @@ const Transaction = sequelize.define('Transaction', {
 });
 
 Wallet.hasMany(Transaction, {
+  as: 'transactions',
   foreignKey: { name: 'walletId', allowNull: false },
   onDelete: 'CASCADE',
 });
 Transaction.belongsTo(Wallet, {
+  as: 'wallet',
   foreignKey: { name: 'walletId', allowNull: false },
 });
 
