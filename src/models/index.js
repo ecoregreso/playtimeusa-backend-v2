@@ -11,6 +11,8 @@ const StaffUser = require("./StaffUser");
 const Session = require("./Session");
 const DepositIntent = require("./DepositIntent");
 const WithdrawalIntent = require("./WithdrawalIntent");
+const StaffKey = require("./StaffKey");
+const StaffMessage = require("./StaffMessage");
 
 module.exports = {
   sequelize,
@@ -24,4 +26,6 @@ module.exports = {
   Session,
   DepositIntent,
   WithdrawalIntent,
+  StaffKey,
+  StaffMessage,
 };

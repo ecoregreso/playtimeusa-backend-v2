@@ -18,6 +18,9 @@ const adminSessionsRoutes = require("./routes/adminSessions");
 const adminAuditRoutes = require("./routes/adminAudit");
 const financeRoutes = require("./routes/finance");
 const playerRoutes = require("./routes/playerRoutes");
+const staffMessagesRoutes = require("./routes/staffMessages");
+const { StaffKey, StaffMessage } = require("./models");
+const { Op } = require("sequelize");
 
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
@@ -104,12 +107,36 @@ app.use("/api/v1/vouchers", voucherRoutes);
 app.use("/api/v1/admin/players", adminPlayersRoutes);
 app.use("/api/v1/admin/reports", reportsRoutes);
 app.use("/api/v1/staff", staffAuthRoutes);
+app.use("/api/v1/staff/messaging", staffMessagesRoutes);
 app.use("/api/v1/admin/staff", adminStaffRoutes);
 app.use("/api/v1/admin/transactions", adminTransactionsRoutes);
 app.use("/api/v1/admin/sessions", adminSessionsRoutes);
 app.use("/api/v1/admin/audit", adminAuditRoutes);
 app.use("/api/v1/player", playerRoutes);
 app.use("/api/v1", financeRoutes);
+
+// Ensure messaging tables exist without altering others
+Promise.all([StaffKey.sync(), StaffMessage.sync()]).catch((err) =>
+  console.error("[MSG] sync error:", err.message || err)
+);
+
+// Purge messages older than 24h every hour
+const PURGE_MS = 24 * 60 * 60 * 1000;
+setInterval(async () => {
+  try {
+    const cutoff = new Date(Date.now() - PURGE_MS);
+    const deleted = await StaffMessage.destroy({
+      where: {
+        createdAt: { [Op.lt]: cutoff },
+      },
+    });
+    if (deleted > 0) {
+      console.log(`[MSG] Purged ${deleted} messages older than 24h`);
+    }
+  } catch (err) {
+    console.error("[MSG] Purge error:", err.message || err);
+  }
+}, 60 * 60 * 1000);
 
 // 404
 app.use((req, res, next) => {
