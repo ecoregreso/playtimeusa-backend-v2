@@ -11,6 +11,8 @@ const { PERMISSIONS } = require("../constants/permissions");
 
 const router = express.Router();
 
+const DEFAULT_TENANT = "default";
+
 const STATUS = {
   PENDING: "pending",
   APPROVED: "approved",
@@ -19,17 +21,22 @@ const STATUS = {
   ACKNOWLEDGED: "acknowledged",
 };
 
-async function getOwnerAddress() {
-  const row = await OwnerSetting.findByPk("ownerBtcAddress");
+function ownerKey(tenantId) {
+  return `${tenantId || DEFAULT_TENANT}:ownerBtcAddress`;
+}
+
+async function getOwnerAddress(tenantId) {
+  const row = await OwnerSetting.findByPk(ownerKey(tenantId));
   return row?.value || "";
 }
 
-async function addMessage({ orderId, sender, senderRole, body }) {
+async function addMessage({ orderId, sender, senderRole, body, tenantId }) {
   if (!body) return null;
   return PurchaseOrderMessage.create({
     orderId,
     sender,
     senderRole,
+    tenantId,
     body,
   });
 }
@@ -41,7 +48,7 @@ router.get(
   requirePermission(PERMISSIONS.FINANCE_READ),
   async (req, res) => {
     try {
-      const addr = await getOwnerAddress();
+      const addr = await getOwnerAddress(req.staff?.tenantId);
       res.json({ ok: true, ownerBtcAddress: addr });
     } catch (err) {
       console.error("[PO] owner addr get error:", err);
@@ -58,7 +65,10 @@ router.post(
   async (req, res) => {
     try {
       const addr = (req.body?.ownerBtcAddress || "").trim();
-      await OwnerSetting.upsert({ key: "ownerBtcAddress", value: addr });
+      await OwnerSetting.upsert({
+        key: ownerKey(req.staff?.tenantId),
+        value: addr,
+      });
       res.json({ ok: true, ownerBtcAddress: addr });
     } catch (err) {
       console.error("[PO] owner addr set error:", err);
@@ -88,6 +98,8 @@ router.post(
         btcRate: btcRate || null,
         note: note || "",
         requestedBy: req.staff?.username || "agent",
+        requestedById: req.staff?.id || null,
+        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
       });
 
       if (note?.trim()) {
@@ -96,6 +108,7 @@ router.post(
           sender: req.staff?.username || "staff",
           senderRole: req.staff?.role || "staff",
           body: note.trim(),
+          tenantId: req.staff?.tenantId || DEFAULT_TENANT,
         });
       }
 
@@ -116,8 +129,11 @@ router.get(
     try {
       const isOwner = (req.staff?.permissions || []).includes(PERMISSIONS.FINANCE_WRITE);
       const where = isOwner
-        ? {}
-        : { requestedBy: req.staff?.username || "__none__" };
+        ? { tenantId: req.staff?.tenantId || DEFAULT_TENANT }
+        : {
+            tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+            requestedById: req.staff?.id || -1,
+          };
 
       const orders = await PurchaseOrder.findAll({
         where,
@@ -134,8 +150,9 @@ router.get(
 async function canAccessOrder(order, staff) {
   if (!order) return false;
   const perms = staff?.permissions || [];
+  if (order.tenantId && staff?.tenantId && order.tenantId !== staff.tenantId) return false;
   if (perms.includes(PERMISSIONS.FINANCE_WRITE)) return true;
-  return order.requestedBy === staff?.username;
+  return order.requestedById === staff?.id || order.requestedBy === staff?.username;
 }
 
 // GET messages for an order
@@ -150,7 +167,7 @@ router.get(
         return res.status(403).json({ ok: false, error: "Forbidden" });
       }
       const messages = await PurchaseOrderMessage.findAll({
-        where: { orderId: order.id },
+        where: { orderId: order.id, tenantId: req.staff?.tenantId || DEFAULT_TENANT },
         order: [["createdAt", "ASC"]],
       });
       res.json({ ok: true, messages });
@@ -181,6 +198,7 @@ router.post(
         sender: req.staff?.username || "staff",
         senderRole: req.staff?.role || "staff",
         body,
+        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
       });
 
       res.status(201).json({ ok: true, message: msg });
@@ -205,13 +223,14 @@ router.post(
       }
 
       const ownerBtcAddress =
-        (req.body?.ownerBtcAddress || "").trim() || (await getOwnerAddress());
+        (req.body?.ownerBtcAddress || "").trim() || (await getOwnerAddress(req.staff?.tenantId));
       if (!ownerBtcAddress) {
         return res.status(400).json({ ok: false, error: "Wallet address required" });
       }
 
       order.ownerBtcAddress = ownerBtcAddress;
       order.status = STATUS.APPROVED;
+      order.tenantId = req.staff?.tenantId || DEFAULT_TENANT;
       await order.save();
 
       const message =
@@ -222,6 +241,7 @@ router.post(
         sender: req.staff?.username || "owner",
         senderRole: req.staff?.role || "owner",
         body: message,
+        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
       });
 
       res.json({ ok: true, order });
@@ -243,6 +263,9 @@ router.post(
       if (!order) return res.status(404).json({ ok: false, error: "Not found" });
       if (order.status !== STATUS.APPROVED) {
         return res.status(400).json({ ok: false, error: "Order not approved yet" });
+      }
+      if (order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
+        return res.status(403).json({ ok: false, error: "Forbidden" });
       }
       const isOwner = (req.staff?.permissions || []).includes(PERMISSIONS.FINANCE_WRITE);
       const isRequester = order.requestedBy === (req.staff?.username || "");
@@ -266,6 +289,7 @@ router.post(
         sender: req.staff?.username || "agent",
         senderRole: req.staff?.role || "agent",
         body,
+        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
       });
 
       res.json({ ok: true, order });
@@ -288,6 +312,9 @@ router.post(
       if (order.status !== STATUS.AWAITING_CREDIT) {
         return res.status(400).json({ ok: false, error: "Order not awaiting credit" });
       }
+      if (order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
+        return res.status(403).json({ ok: false, error: "Forbidden" });
+      }
 
       order.status = STATUS.COMPLETED;
       order.ownerCreditedAt = new Date();
@@ -299,6 +326,7 @@ router.post(
         sender: req.staff?.username || "owner",
         senderRole: req.staff?.role || "owner",
         body,
+        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
       });
 
       res.json({ ok: true, order });
@@ -326,6 +354,9 @@ router.post(
       if (order.status !== STATUS.COMPLETED) {
         return res.status(400).json({ ok: false, error: "Order not completed yet" });
       }
+      if (order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
+        return res.status(403).json({ ok: false, error: "Forbidden" });
+      }
 
       order.status = STATUS.ACKNOWLEDGED;
       order.agentAcknowledgedAt = new Date();
@@ -337,6 +368,7 @@ router.post(
         sender: req.staff?.username || "agent",
         senderRole: req.staff?.role || "agent",
         body,
+        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
       });
 
       res.json({ ok: true, order });
@@ -356,6 +388,9 @@ router.delete(
     try {
       const order = await PurchaseOrder.findByPk(req.params.id);
       if (!order) return res.status(404).json({ ok: false, error: "Not found" });
+      if (order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
+        return res.status(403).json({ ok: false, error: "Forbidden" });
+      }
       await PurchaseOrderMessage.destroy({ where: { orderId: order.id } });
       await order.destroy();
       res.json({ ok: true });

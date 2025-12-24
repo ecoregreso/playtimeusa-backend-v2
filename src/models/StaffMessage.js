@@ -21,6 +21,10 @@ const StaffMessage = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: false,
     },
+    tenantId: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+    },
     type: {
       type: DataTypes.STRING(48),
       allowNull: false,
@@ -43,6 +47,7 @@ const StaffMessage = sequelize.define(
   {
     tableName: "staff_messages",
     timestamps: false,
+    indexes: [{ fields: ["tenantId"] }],
   }
 );
 

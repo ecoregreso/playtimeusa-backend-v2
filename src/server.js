@@ -20,7 +20,7 @@ const financeRoutes = require("./routes/finance");
 const playerRoutes = require("./routes/playerRoutes");
 const staffMessagesRoutes = require("./routes/staffMessages");
 const purchaseOrdersRoutes = require("./routes/purchaseOrders");
-const { StaffKey, StaffMessage, PurchaseOrder, PurchaseOrderMessage, OwnerSetting } = require("./models");
+const { StaffUser, StaffKey, StaffMessage, PurchaseOrder, PurchaseOrderMessage, OwnerSetting } = require("./models");
 const { Op } = require("sequelize");
 
 const PORT = process.env.PORT || 3000;
@@ -119,8 +119,9 @@ app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
 
 // Ensure messaging tables exist without altering others
 Promise.all([
-  StaffKey.sync(),
-  StaffMessage.sync(),
+  StaffUser.sync({ alter: true }),
+  StaffKey.sync({ alter: true }),
+  StaffMessage.sync({ alter: true }),
   PurchaseOrder.sync({ alter: true }),
   PurchaseOrderMessage.sync({ alter: true }),
   OwnerSetting.sync(),

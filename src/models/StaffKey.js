@@ -14,6 +14,10 @@ const StaffKey = sequelize.define(
       allowNull: false,
       unique: true,
     },
+    tenantId: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+    },
     publicKey: {
       type: DataTypes.TEXT,
       allowNull: false,
@@ -32,6 +36,7 @@ const StaffKey = sequelize.define(
   {
     tableName: "staff_keys",
     timestamps: true,
+    indexes: [{ fields: ["tenantId"] }],
   }
 );
 

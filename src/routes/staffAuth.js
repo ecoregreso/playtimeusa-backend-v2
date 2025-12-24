@@ -64,6 +64,7 @@ router.post("/login", async (req, res) => {
         username: staff.username,
         role: staff.role,
         isActive: staff.isActive,
+        tenantId: staff.tenantId,
         permissions,
         agentCode: staff.agentCode,
         parentId: staff.parentId,

@@ -28,6 +28,10 @@ const PurchaseOrderMessage = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    tenantId: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+    },
     body: {
       type: DataTypes.TEXT,
       allowNull: false,
@@ -36,7 +40,7 @@ const PurchaseOrderMessage = sequelize.define(
   {
     tableName: "purchase_order_messages",
     timestamps: true,
-    indexes: [{ fields: ["orderId"] }],
+    indexes: [{ fields: ["orderId"] }, { fields: ["tenantId"] }],
   }
 );
 

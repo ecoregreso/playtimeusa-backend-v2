@@ -49,15 +49,23 @@ const PurchaseOrder = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    tenantId: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+    },
     requestedBy: {
       type: DataTypes.STRING,
       allowNull: false,
+    },
+    requestedById: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
     },
   },
   {
     tableName: "purchase_orders",
     timestamps: true,
-    indexes: [{ fields: ["requestedBy"] }],
+    indexes: [{ fields: ["requestedBy"] }, { fields: ["tenantId"] }],
   }
 );
 

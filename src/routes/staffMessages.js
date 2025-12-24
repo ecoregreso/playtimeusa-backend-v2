@@ -15,6 +15,7 @@ router.post("/keys", staffAuth, async (req, res) => {
 
     const [key] = await StaffKey.upsert({
       staffId: req.staff.id,
+      tenantId: req.staff?.tenantId,
       publicKey,
     });
 
@@ -32,11 +33,15 @@ router.get("/keys/:username", staffAuth, async (req, res) => {
     if (!username) {
       return res.status(400).json({ ok: false, error: "username is required" });
     }
-    const user = await StaffUser.findOne({ where: { username } });
+    const user = await StaffUser.findOne({
+      where: { username, tenantId: req.staff?.tenantId },
+    });
     if (!user) {
       return res.status(404).json({ ok: false, error: "User not found" });
     }
-    const key = await StaffKey.findOne({ where: { staffId: user.id } });
+    const key = await StaffKey.findOne({
+      where: { staffId: user.id, tenantId: req.staff?.tenantId },
+    });
     if (!key) {
       return res.status(404).json({ ok: false, error: "Key not found" });
     }
@@ -62,19 +67,22 @@ router.post("/messages", staffAuth, async (req, res) => {
       return res.status(400).json({ ok: false, error: "to and ciphertext are required" });
     }
 
-    const recipient = await StaffUser.findOne({ where: { username: toUsername } });
+    const recipient = await StaffUser.findOne({
+      where: { username: toUsername, tenantId: req.staff?.tenantId },
+    });
     if (!recipient || !recipient.isActive) {
       return res.status(404).json({ ok: false, error: "Recipient not found or inactive" });
     }
 
-    const msg = await StaffMessage.create({
-      threadId,
-      fromId: req.staff.id,
-      toId: recipient.id,
-      ciphertext,
-      type,
-      createdAt: new Date(),
-    });
+      const msg = await StaffMessage.create({
+        threadId,
+        fromId: req.staff.id,
+        toId: recipient.id,
+        tenantId: req.staff?.tenantId,
+        ciphertext,
+        type,
+        createdAt: new Date(),
+      });
 
     return res.status(201).json({
       ok: true,
@@ -100,12 +108,14 @@ router.get("/messages", staffAuth, async (req, res) => {
     const withUsername = req.query.with ? String(req.query.with).trim() : null;
     const threadId = req.query.threadId ? String(req.query.threadId).trim() : null;
 
-    let where = {};
+    let where = { tenantId: req.staff?.tenantId };
 
     if (threadId) {
       where.threadId = threadId;
     } else if (withUsername) {
-      const other = await StaffUser.findOne({ where: { username: withUsername } });
+      const other = await StaffUser.findOne({
+        where: { username: withUsername, tenantId: req.staff?.tenantId },
+      });
       if (!other) {
         return res.status(404).json({ ok: false, error: "User not found" });
       }
@@ -117,12 +127,13 @@ router.get("/messages", staffAuth, async (req, res) => {
       };
     } else {
       where = {
+        tenantId: req.staff?.tenantId,
         [Op.or]: [{ toId: req.staff.id }, { fromId: req.staff.id }],
       };
     }
 
     const messages = await StaffMessage.findAll({
-      where,
+      where: { ...where, tenantId: req.staff?.tenantId },
       order: [["createdAt", "ASC"]],
     });
 
@@ -151,7 +162,7 @@ router.post("/messages/:id/read", staffAuth, async (req, res) => {
     const id = req.params.id;
     const msg = await StaffMessage.findByPk(id);
     if (!msg) return res.status(404).json({ ok: false, error: "Not found" });
-    if (msg.toId !== req.staff.id) {
+    if (msg.toId !== req.staff.id || msg.tenantId !== req.staff?.tenantId) {
       return res.status(403).json({ ok: false, error: "Forbidden" });
     }
     msg.readAt = new Date();

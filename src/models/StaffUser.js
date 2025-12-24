@@ -10,6 +10,10 @@ const StaffUser = sequelize.define(
       primaryKey: true,
       autoIncrement: true,
     },
+    tenantId: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+    },
     username: {
       type: DataTypes.STRING(64),
       allowNull: false,
@@ -55,6 +59,7 @@ const StaffUser = sequelize.define(
   {
     tableName: "staff_users",
     timestamps: true,
+    indexes: [{ fields: ["tenantId"] }],
   }
 );
 

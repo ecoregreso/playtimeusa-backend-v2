@@ -23,6 +23,7 @@ function signStaffToken(staff) {
     sub: staff.id,
     type: "staff",
     role: staff.role,
+    tenantId: staff.tenantId || null,
     permissions,
   };
   return jwt.sign(payload, STAFF_JWT_SECRET, {
@@ -72,6 +73,10 @@ function requireStaffAuth(requiredPermissions = []) {
         return res.status(403).json({ ok: false, error: "Staff inactive" });
       }
 
+      if (payload.tenantId && staff.tenantId && payload.tenantId !== staff.tenantId) {
+        return res.status(403).json({ ok: false, error: "Tenant mismatch" });
+      }
+
       const permissions = normalizePermissions({
         ...staff.toJSON(),
         permissions: payload.permissions || staff.permissions,
@@ -91,6 +96,7 @@ function requireStaffAuth(requiredPermissions = []) {
         agentCode: staff.agentCode,
         parentId: staff.parentId,
         isActive: staff.isActive,
+        tenantId: staff.tenantId || payload.tenantId || "default",
       };
 
       return next();
