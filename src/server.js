@@ -19,7 +19,8 @@ const adminAuditRoutes = require("./routes/adminAudit");
 const financeRoutes = require("./routes/finance");
 const playerRoutes = require("./routes/playerRoutes");
 const staffMessagesRoutes = require("./routes/staffMessages");
-const { StaffKey, StaffMessage } = require("./models");
+const purchaseOrdersRoutes = require("./routes/purchaseOrders");
+const { StaffKey, StaffMessage, PurchaseOrder, PurchaseOrderMessage, OwnerSetting } = require("./models");
 const { Op } = require("sequelize");
 
 const PORT = process.env.PORT || 3000;
@@ -114,9 +115,16 @@ app.use("/api/v1/admin/sessions", adminSessionsRoutes);
 app.use("/api/v1/admin/audit", adminAuditRoutes);
 app.use("/api/v1/player", playerRoutes);
 app.use("/api/v1", financeRoutes);
+app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
 
 // Ensure messaging tables exist without altering others
-Promise.all([StaffKey.sync(), StaffMessage.sync()]).catch((err) =>
+Promise.all([
+  StaffKey.sync(),
+  StaffMessage.sync(),
+  PurchaseOrder.sync(),
+  PurchaseOrderMessage.sync(),
+  OwnerSetting.sync(),
+]).catch((err) =>
   console.error("[MSG] sync error:", err.message || err)
 );
 

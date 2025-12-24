@@ -41,17 +41,56 @@ router.post("/login", async (req, res) => {
   }
 
   try {
-    const voucher = await Voucher.findOne({
+    // First, look for a NEW voucher (primary login path)
+    let voucher = await Voucher.findOne({
       where: {
         code: { [Op.iLike]: code },
         pin: { [Op.iLike]: pin },
         status: { [Op.in]: ["new", "NEW"] },
       },
     });
+
+    // Fallback: allow re-login with existing player credentials if voucher already redeemed
     if (!voucher) {
-      return res
-        .status(404)
-        .json({ ok: false, error: "Voucher not found or invalid pin" });
+      const user = await User.findOne({
+        where: { username: code },
+        include: [{ model: Wallet, as: "wallet" }],
+      });
+
+      if (!user || user.role !== "player") {
+        return res
+          .status(404)
+          .json({ ok: false, error: "Voucher not found or invalid pin" });
+      }
+
+      const validPin = await bcrypt.compare(pin, user.passwordHash || "");
+      if (!validPin) {
+        return res
+          .status(404)
+          .json({ ok: false, error: "Voucher not found or invalid pin" });
+      }
+
+      const wallet = user.wallet || (await getOrCreateWallet(user.id));
+      const accessToken = signAccessToken(user);
+      const refreshToken = signRefreshToken(user);
+
+      return res.json({
+        ok: true,
+        user: {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+        },
+        wallet: wallet
+          ? {
+              id: wallet.id,
+              balance: Number(wallet.balance || 0),
+              currency: wallet.currency,
+            }
+          : null,
+        voucher: null,
+        tokens: { accessToken, refreshToken },
+      });
     }
 
     const status = String(voucher.status || "").toLowerCase();
