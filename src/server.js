@@ -121,8 +121,8 @@ app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
 Promise.all([
   StaffKey.sync(),
   StaffMessage.sync(),
-  PurchaseOrder.sync(),
-  PurchaseOrderMessage.sync(),
+  PurchaseOrder.sync({ alter: true }),
+  PurchaseOrderMessage.sync({ alter: true }),
   OwnerSetting.sync(),
 ]).catch((err) =>
   console.error("[MSG] sync error:", err.message || err)

@@ -23,6 +23,24 @@ const PurchaseOrder = sequelize.define(
       type: DataTypes.DECIMAL(18, 2),
       allowNull: true,
     },
+    status: {
+      // pending -> approved (wallet shared) -> awaiting_credit (agent sent BTC) -> completed (owner credited) -> acknowledged (agent confirmed)
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: "pending",
+    },
+    confirmationCode: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    ownerCreditedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    agentAcknowledgedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
     note: {
       type: DataTypes.TEXT,
       allowNull: true,
