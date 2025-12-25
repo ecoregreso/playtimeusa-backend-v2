@@ -2,7 +2,7 @@
 const express = require("express");
 const { Op } = require("sequelize");
 
-const { User, Wallet, Transaction, GameRound } = require("../models");
+const { User, Wallet, Transaction, GameRound, Session } = require("../models");
 const {
   staffAuth,
   requirePermission,
@@ -204,6 +204,28 @@ router.get(
       });
     } catch (err) {
       console.error("[ADMIN_PLAYERS] rounds error:", err);
+      res.status(500).json({ ok: false, error: "Internal error" });
+    }
+  }
+);
+
+// GET /api/v1/admin/players/:id/sessions
+router.get(
+  "/:id/sessions",
+  staffAuth,
+  requirePermission(PERMISSIONS.PLAYER_READ),
+  async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit || "200", 10), 500);
+      const sessions = await Session.findAll({
+        where: { actorType: "user", userId: req.params.id },
+        order: [["lastSeenAt", "DESC"]],
+        limit,
+      });
+
+      res.json({ ok: true, sessions });
+    } catch (err) {
+      console.error("[ADMIN_PLAYERS] sessions error:", err);
       res.status(500).json({ ok: false, error: "Internal error" });
     }
   }

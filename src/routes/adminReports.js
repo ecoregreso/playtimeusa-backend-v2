@@ -3,7 +3,15 @@ const express = require("express");
 const router = express.Router();
 const { Op, fn, col, literal } = require("sequelize");
 
-const { sequelize, User, Voucher, Transaction, GameRound } = require("../models");
+const {
+  sequelize,
+  User,
+  Voucher,
+  Transaction,
+  GameRound,
+  Wallet,
+  Session,
+} = require("../models");
 
 const { requireStaffAuth, PERMISSIONS } = require("../middleware/staffAuth");
 
@@ -72,6 +80,12 @@ router.get(
         playersNew,
         gameRoundsAgg,
         txByType,
+        recentVouchers,
+        recentTransactions,
+        recentRounds,
+        staffSessions,
+        activeStaffCount,
+        activePlayerCount,
       ] = await Promise.all([
         // All vouchers *created* in the period
         Voucher.findAll({
@@ -160,6 +174,51 @@ router.get(
             [fn("SUM", col("amount")), "totalAmount"],
           ],
           group: ["type"],
+        }),
+
+        // Recent vouchers (dashboard)
+        Voucher.findAll({
+          order: [["createdAt", "DESC"]],
+          limit: 12,
+          attributes: ["id", "code", "amount", "bonusAmount", "status", "createdAt"],
+        }),
+
+        // Recent transactions (dashboard)
+        Transaction.findAll({
+          include: [{ model: Wallet, as: "wallet", attributes: ["id", "userId", "currency"] }],
+          order: [["createdAt", "DESC"]],
+          limit: 12,
+        }),
+
+        // Recent rounds (dashboard)
+        GameRound.findAll({
+          include: [{ model: User, as: "player", attributes: ["id", "username"] }],
+          order: [["createdAt", "DESC"]],
+          limit: 12,
+        }),
+
+        // Recent staff sessions (dashboard)
+        Session.findAll({
+          where: {
+            actorType: "staff",
+            revokedAt: { [Op.is]: null },
+          },
+          order: [["lastSeenAt", "DESC"]],
+          limit: 12,
+        }),
+
+        // Active session counts
+        Session.count({
+          where: {
+            actorType: "staff",
+            revokedAt: { [Op.is]: null },
+          },
+        }),
+        Session.count({
+          where: {
+            actorType: "user",
+            revokedAt: { [Op.is]: null },
+          },
         }),
       ]);
 
@@ -341,6 +400,34 @@ router.get(
           start,
           end,
           label: `${start} → ${end}`,
+        },
+        sessions: {
+          activeStaff: Number(activeStaffCount || 0),
+          activePlayers: Number(activePlayerCount || 0),
+          staffSessions: (staffSessions || []).map((s) => s.toJSON()),
+        },
+        recent: {
+          vouchers: (recentVouchers || []).map((v) => ({
+            ...v.toJSON(),
+            status: String(v.status || "").toLowerCase(),
+          })),
+          transactions: (recentTransactions || []).map((t) => ({
+            ...t.toJSON(),
+            amount: Number(t.amount || 0),
+            balanceBefore: Number(t.balanceBefore || 0),
+            balanceAfter: Number(t.balanceAfter || 0),
+          })),
+          rounds: (recentRounds || []).map((r) => ({
+            id: r.id,
+            gameId: r.gameId,
+            betAmount: Number(r.betAmount || 0),
+            winAmount: Number(r.winAmount || 0),
+            status: r.status,
+            createdAt: r.createdAt,
+            player: r.player
+              ? { id: r.player.id, userCode: r.player.username }
+              : null,
+          })),
         },
         summary,
         vouchers: {
