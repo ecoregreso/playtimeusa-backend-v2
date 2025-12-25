@@ -10,7 +10,8 @@ const StaffMessage = sequelize.define(
       primaryKey: true,
     },
     threadId: {
-      type: DataTypes.UUID,
+      // deterministic thread id, not necessarily a UUID
+      type: DataTypes.STRING(128),
       allowNull: true,
     },
     fromId: {
