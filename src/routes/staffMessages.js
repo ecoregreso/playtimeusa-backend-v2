@@ -182,6 +182,19 @@ router.get("/messages", staffAuth, async (req, res) => {
       order: [["createdAt", "ASC"]],
     });
 
+    // Resolve usernames for all participants in this result
+    const participantIds = Array.from(
+      new Set(messages.flatMap((m) => [m.fromId, m.toId]).filter(Boolean))
+    );
+    if (participantIds.length) {
+      const users = await StaffUser.findAll({
+        where: { id: participantIds, tenantId: req.staff?.tenantId },
+      });
+      for (const u of users) {
+        participants.set(u.id, u.username);
+      }
+    }
+
     return res.json({
       ok: true,
       messages: messages.map((m) => ({
