@@ -254,4 +254,39 @@ router.delete("/messages/:id", staffAuth, async (req, res) => {
   }
 });
 
+// Delete entire thread (both sides)
+router.delete("/messages/thread/:threadId", staffAuth, async (req, res) => {
+  try {
+    const threadId = String(req.params.threadId || "").trim();
+    if (!threadId) return res.status(400).json({ ok: false, error: "threadId required" });
+    const deleted = await StaffMessage.destroy({
+      where: {
+        tenantId: req.staff?.tenantId,
+        threadId,
+        [Op.or]: [{ fromId: req.staff.id }, { toId: req.staff.id }],
+      },
+    });
+    return res.json({ ok: true, deleted });
+  } catch (err) {
+    console.error("[STAFF_MSG] delete thread error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to delete thread" });
+  }
+});
+
+// Delete entire inbox for this user
+router.delete("/messages/inbox", staffAuth, async (req, res) => {
+  try {
+    const deleted = await StaffMessage.destroy({
+      where: {
+        tenantId: req.staff?.tenantId,
+        [Op.or]: [{ fromId: req.staff.id }, { toId: req.staff.id }],
+      },
+    });
+    return res.json({ ok: true, deleted });
+  } catch (err) {
+    console.error("[STAFF_MSG] delete inbox error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to delete inbox" });
+  }
+});
+
 module.exports = router;
