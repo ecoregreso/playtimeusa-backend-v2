@@ -1,7 +1,8 @@
 // src/routes/games.js
 const express = require('express');
+const { Op } = require('sequelize');
 const { sequelize } = require('../db');
-const { User, Wallet, Transaction, GameRound } = require('../models');
+const { Wallet, Transaction, GameRound, Session } = require('../models');
 const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -15,6 +16,24 @@ async function getOrCreateWallet(userId, t) {
     );
   }
   return wallet;
+}
+
+async function resolveSessionId(req, userId, t) {
+  const raw = req.headers["x-session-id"];
+  if (!raw) return null;
+  const session = await Session.findOne({
+    where: {
+      id: String(raw),
+      actorType: "user",
+      userId: String(userId),
+      revokedAt: { [Op.is]: null },
+    },
+    transaction: t,
+  });
+  if (!session) return null;
+  session.lastSeenAt = new Date();
+  await session.save({ transaction: t });
+  return session.id;
 }
 
 /**
@@ -56,6 +75,14 @@ router.post(
       wallet.balance = balanceAfter;
       await wallet.save({ transaction: t });
 
+      const sessionId = await resolveSessionId(req, req.user.id, t);
+      const txMetadata = {
+        gameId,
+        roundIndex: roundIndex ?? null,
+        ...(metadata || {}),
+      };
+      if (sessionId) txMetadata.sessionId = sessionId;
+
       const betTx = await Transaction.create(
         {
           walletId: wallet.id,
@@ -64,15 +91,16 @@ router.post(
           balanceBefore,
           balanceAfter,
           reference: `game:${gameId}`,
-          metadata: {
-            gameId,
-            roundIndex: roundIndex ?? null,
-            ...(metadata || {}),
-          },
+          metadata: txMetadata,
           createdByUserId: req.user.id,
         },
         { transaction: t }
       );
+
+      const roundMetadata = {
+        ...(metadata || {}),
+      };
+      if (sessionId) roundMetadata.sessionId = sessionId;
 
       const round = await GameRound.create(
         {
@@ -84,7 +112,7 @@ router.post(
           currency,
           status: 'pending',
           result: result || null,
-          metadata: metadata || null,
+          metadata: Object.keys(roundMetadata).length ? roundMetadata : null,
         },
         { transaction: t }
       );
@@ -147,6 +175,11 @@ router.post(
         return res.status(400).json({ error: 'winAmount must be >= 0' });
       }
 
+      const sessionId =
+        (await resolveSessionId(req, round.playerId, t)) ||
+        round?.metadata?.sessionId ||
+        null;
+
       let wallet = await getOrCreateWallet(round.playerId, t);
       const balanceBefore = parseFloat(wallet.balance || 0);
       let balanceAfter = balanceBefore;
@@ -157,6 +190,13 @@ router.post(
         wallet.balance = balanceAfter;
         await wallet.save({ transaction: t });
 
+        const winMetadata = {
+          gameId,
+          roundId: round.id,
+          ...(metadata || {}),
+        };
+        if (sessionId) winMetadata.sessionId = sessionId;
+
         winTx = await Transaction.create(
           {
             walletId: wallet.id,
@@ -165,11 +205,7 @@ router.post(
             balanceBefore,
             balanceAfter,
             reference: `game_round:${round.id}`,
-            metadata: {
-              gameId,
-              roundId: round.id,
-              ...(metadata || {}),
-            },
+            metadata: winMetadata,
             createdByUserId: req.user.id,
           },
           { transaction: t }
@@ -182,10 +218,11 @@ router.post(
       if (result) {
         round.result = result;
       }
-      if (metadata) {
+      if (metadata || sessionId) {
         round.metadata = {
           ...(round.metadata || {}),
-          ...metadata,
+          ...(metadata || {}),
+          ...(sessionId ? { sessionId } : {}),
         };
       }
 

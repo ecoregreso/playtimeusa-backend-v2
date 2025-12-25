@@ -155,18 +155,21 @@ router.get(
   requirePermission(PERMISSIONS.PLAYER_READ),
   async (req, res) => {
     try {
-      const limit = Math.min(parseInt(req.query.limit || "50", 10), 200);
+      const all = String(req.query.all || "").toLowerCase() === "1";
+      const limit = all ? null : Math.min(parseInt(req.query.limit || "50", 10), 200);
       const wallet = await Wallet.findOne({ where: { userId: req.params.id } });
 
       if (!wallet) {
         return res.json({ ok: true, transactions: [] });
       }
 
-      const tx = await Transaction.findAll({
+      const txQuery = {
         where: { walletId: wallet.id },
         order: [["createdAt", "DESC"]],
-        limit,
-      });
+      };
+      if (limit) txQuery.limit = limit;
+
+      const tx = await Transaction.findAll(txQuery);
 
       res.json({ ok: true, transactions: tx });
     } catch (err) {
@@ -183,13 +186,16 @@ router.get(
   requirePermission(PERMISSIONS.PLAYER_READ),
   async (req, res) => {
     try {
-      const limit = Math.min(parseInt(req.query.limit || "200", 10), 500);
+      const all = String(req.query.all || "").toLowerCase() === "1";
+      const limit = all ? null : Math.min(parseInt(req.query.limit || "200", 10), 500);
 
-      const rounds = await GameRound.findAll({
+      const roundQuery = {
         where: { playerId: req.params.id },
         order: [["createdAt", "DESC"]],
-        limit,
-      });
+      };
+      if (limit) roundQuery.limit = limit;
+
+      const rounds = await GameRound.findAll(roundQuery);
 
       res.json({
         ok: true,
@@ -198,6 +204,8 @@ router.get(
           gameId: r.gameId,
           betAmount: Number(r.betAmount || 0),
           winAmount: Number(r.winAmount || 0),
+          status: r.status,
+          sessionId: r?.metadata?.sessionId || null,
           result: r.result || null,
           createdAt: r.createdAt,
         })),

@@ -84,8 +84,11 @@ router.get(
         recentTransactions,
         recentRounds,
         staffSessions,
+        playerSessions,
         activeStaffCount,
         activePlayerCount,
+        totalStaffCount,
+        totalPlayerCount,
       ] = await Promise.all([
         // All vouchers *created* in the period
         Voucher.findAll({
@@ -207,6 +210,16 @@ router.get(
           limit: 12,
         }),
 
+        // Recent player sessions (dashboard)
+        Session.findAll({
+          where: {
+            actorType: "user",
+            revokedAt: { [Op.is]: null },
+          },
+          order: [["lastSeenAt", "DESC"]],
+          limit: 12,
+        }),
+
         // Active session counts
         Session.count({
           where: {
@@ -218,6 +231,16 @@ router.get(
           where: {
             actorType: "user",
             revokedAt: { [Op.is]: null },
+          },
+        }),
+        Session.count({
+          where: {
+            actorType: "staff",
+          },
+        }),
+        Session.count({
+          where: {
+            actorType: "user",
           },
         }),
       ]);
@@ -404,7 +427,10 @@ router.get(
         sessions: {
           activeStaff: Number(activeStaffCount || 0),
           activePlayers: Number(activePlayerCount || 0),
+          totalStaff: Number(totalStaffCount || 0),
+          totalPlayers: Number(totalPlayerCount || 0),
           staffSessions: (staffSessions || []).map((s) => s.toJSON()),
+          playerSessions: (playerSessions || []).map((s) => s.toJSON()),
         },
         recent: {
           vouchers: (recentVouchers || []).map((v) => ({

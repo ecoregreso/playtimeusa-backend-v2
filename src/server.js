@@ -21,6 +21,7 @@ const playerRoutes = require("./routes/playerRoutes");
 const staffMessagesRoutes = require("./routes/staffMessages");
 const staffPushRoutes = require("./routes/staffPush");
 const purchaseOrdersRoutes = require("./routes/purchaseOrders");
+const gamesRoutes = require("./routes/games");
 const {
   StaffUser,
   StaffKey,
@@ -108,6 +109,7 @@ app.use("/admin/transactions", adminTransactionsRoutes);
 app.use("/admin/sessions", adminSessionsRoutes);
 app.use("/admin/audit", adminAuditRoutes);
 app.use("/player", playerRoutes);
+app.use("/games", gamesRoutes);
 app.use("/deposits", financeRoutes);
 app.use("/withdrawals", financeRoutes);
 // Preferred v1 API mounts
@@ -124,6 +126,7 @@ app.use("/api/v1/admin/transactions", adminTransactionsRoutes);
 app.use("/api/v1/admin/sessions", adminSessionsRoutes);
 app.use("/api/v1/admin/audit", adminAuditRoutes);
 app.use("/api/v1/player", playerRoutes);
+app.use("/api/v1/games", gamesRoutes);
 app.use("/api/v1", financeRoutes);
 app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
 

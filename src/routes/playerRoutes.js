@@ -2,7 +2,7 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 
 const { Op } = require("sequelize");
-const { sequelize, User, Wallet, Voucher, Transaction } = require("../models");
+const { sequelize, User, Wallet, Voucher, Transaction, Session } = require("../models");
 const { signAccessToken, signRefreshToken } = require("../utils/jwt");
 const { requireAuth } = require("../middleware/auth");
 
@@ -26,6 +26,43 @@ async function getOrCreateWallet(userId, t) {
     );
   }
   return wallet;
+}
+
+async function createPlayerSession(user, req) {
+  try {
+    const session = await Session.create({
+      actorType: "user",
+      userId: String(user.id),
+      role: user.role,
+      lastSeenAt: new Date(),
+      ip: req.ip || null,
+      userAgent: req.get("user-agent") || null,
+    });
+    return session.id;
+  } catch (err) {
+    console.warn("[PLAYER_LOGIN] failed to record session:", err.message);
+    return null;
+  }
+}
+
+async function touchPlayerSession(userId, req) {
+  const raw = req.headers["x-session-id"];
+  if (!raw) return;
+  try {
+    const session = await Session.findOne({
+      where: {
+        id: String(raw),
+        actorType: "user",
+        userId: String(userId),
+        revokedAt: { [Op.is]: null },
+      },
+    });
+    if (!session) return;
+    session.lastSeenAt = new Date();
+    await session.save();
+  } catch (err) {
+    console.warn("[PLAYER_ME] failed to touch session:", err.message);
+  }
 }
 
 // POST /api/v1/player/login
@@ -73,6 +110,7 @@ router.post("/login", async (req, res) => {
       const wallet = user.wallet || (await getOrCreateWallet(user.id));
       const accessToken = signAccessToken(user);
       const refreshToken = signRefreshToken(user);
+      const sessionId = await createPlayerSession(user, req);
 
       return res.json({
         ok: true,
@@ -90,6 +128,7 @@ router.post("/login", async (req, res) => {
           : null,
         voucher: null,
         tokens: { accessToken, refreshToken },
+        sessionId,
       });
     }
 
@@ -166,6 +205,8 @@ router.post("/login", async (req, res) => {
       };
     });
 
+    const sessionId = await createPlayerSession(result.user, req);
+
     return res.json({
       ok: true,
       user: {
@@ -185,6 +226,7 @@ router.post("/login", async (req, res) => {
         redeemedAt: result.voucher.redeemedAt,
       },
       tokens: result.tokens,
+      sessionId,
     });
   } catch (err) {
     console.error("[PLAYER_LOGIN] error:", err);
@@ -195,6 +237,7 @@ router.post("/login", async (req, res) => {
 // GET /api/v1/player/me (requires player access token)
 router.get("/me", requireAuth, async (req, res) => {
   try {
+    await touchPlayerSession(req.user.id, req);
     const user = await User.findByPk(req.user.id, {
       include: [{ model: Wallet, as: "wallet" }],
     });
