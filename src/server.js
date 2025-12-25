@@ -19,8 +19,17 @@ const adminAuditRoutes = require("./routes/adminAudit");
 const financeRoutes = require("./routes/finance");
 const playerRoutes = require("./routes/playerRoutes");
 const staffMessagesRoutes = require("./routes/staffMessages");
+const staffPushRoutes = require("./routes/staffPush");
 const purchaseOrdersRoutes = require("./routes/purchaseOrders");
-const { StaffUser, StaffKey, StaffMessage, PurchaseOrder, PurchaseOrderMessage, OwnerSetting } = require("./models");
+const {
+  StaffUser,
+  StaffKey,
+  StaffMessage,
+  StaffPushDevice,
+  PurchaseOrder,
+  PurchaseOrderMessage,
+  OwnerSetting,
+} = require("./models");
 const { Op } = require("sequelize");
 
 const PORT = process.env.PORT || 3000;
@@ -109,6 +118,7 @@ app.use("/api/v1/admin/players", adminPlayersRoutes);
 app.use("/api/v1/admin/reports", reportsRoutes);
 app.use("/api/v1/staff", staffAuthRoutes);
 app.use("/api/v1/staff/messaging", staffMessagesRoutes);
+app.use("/api/v1/staff/push", staffPushRoutes);
 app.use("/api/v1/admin/staff", adminStaffRoutes);
 app.use("/api/v1/admin/transactions", adminTransactionsRoutes);
 app.use("/api/v1/admin/sessions", adminSessionsRoutes);
@@ -122,12 +132,20 @@ Promise.all([
   StaffUser.sync({ alter: true }),
   StaffKey.sync({ alter: true }),
   StaffMessage.sync({ alter: true }),
+  StaffPushDevice.sync({ alter: true }),
   PurchaseOrder.sync({ alter: true }),
   PurchaseOrderMessage.sync({ alter: true }),
   OwnerSetting.sync(),
 ])
   .then(async () => {
-    const models = [StaffUser, StaffKey, StaffMessage, PurchaseOrder, PurchaseOrderMessage];
+    const models = [
+      StaffUser,
+      StaffKey,
+      StaffMessage,
+      StaffPushDevice,
+      PurchaseOrder,
+      PurchaseOrderMessage,
+    ];
     for (const model of models) {
       try {
         await model.update(

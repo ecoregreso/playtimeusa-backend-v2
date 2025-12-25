@@ -9,6 +9,7 @@ const {
   StaffMessage,
 } = require("../models");
 const { sequelize } = require("../db");
+const { sendPushToStaffIds } = require("../utils/push");
 const { staffAuth, requirePermission } = require("../middleware/staffAuth");
 const { PERMISSIONS } = require("../constants/permissions");
 
@@ -138,6 +139,7 @@ router.post(
          const senderId = req.staff?.id;
          const summary = `New funcoin order #${order.id} by ${order.requestedBy}: ${order.funAmount} FC -> ${order.btcAmount} BTC @ ${order.btcRate || "n/a"} (status: ${order.status})`;
          const tenantId = req.staff?.tenantId || DEFAULT_TENANT;
+         const ownerIds = owners.map((o) => o.id).filter(Boolean);
          for (const owner of owners) {
            if (!senderId || !owner.id) continue;
            const threadId = threadIdForPair(senderId, owner.id);
@@ -149,6 +151,15 @@ router.post(
              type: "purchase_order",
              ciphertext: summary,
              createdAt: new Date(),
+           });
+         }
+         if (ownerIds.length) {
+           await sendPushToStaffIds({
+             tenantId,
+             staffIds: ownerIds,
+             title: "New update",
+             body: "You have a new funcoin order.",
+             data: { type: "purchase_order", id: order.id },
            });
          }
        } catch (notifyErr) {

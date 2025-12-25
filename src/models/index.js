@@ -13,6 +13,7 @@ const DepositIntent = require("./DepositIntent");
 const WithdrawalIntent = require("./WithdrawalIntent");
 const StaffKey = require("./StaffKey");
 const StaffMessage = require("./StaffMessage");
+const StaffPushDevice = require("./StaffPushDevice");
 const PurchaseOrder = require("./PurchaseOrder");
 const PurchaseOrderMessage = require("./PurchaseOrderMessage");
 const OwnerSetting = require("./OwnerSetting");
@@ -31,6 +32,7 @@ module.exports = {
   WithdrawalIntent,
   StaffKey,
   StaffMessage,
+  StaffPushDevice,
   PurchaseOrder,
   PurchaseOrderMessage,
   OwnerSetting,

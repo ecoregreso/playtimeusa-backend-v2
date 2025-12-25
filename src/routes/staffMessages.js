@@ -2,6 +2,7 @@ const express = require("express");
 const { Op } = require("sequelize");
 const { staffAuth } = require("../middleware/staffAuth");
 const { StaffUser, StaffKey, StaffMessage } = require("../models");
+const { sendPushToStaffIds } = require("../utils/push");
 
 const router = express.Router();
 
@@ -124,6 +125,19 @@ router.post("/messages", staffAuth, async (req, res) => {
       type,
       createdAt: new Date(),
     });
+
+    // Send a generic push notification to the recipient (no sensitive content)
+    try {
+      await sendPushToStaffIds({
+        tenantId: req.staff?.tenantId,
+        staffIds: [recipient.id],
+        title: "New update",
+        body: "You have a new message.",
+        data: { type: "message", id: msg.id, threadId: msg.threadId },
+      });
+    } catch (notifyErr) {
+      console.error("[STAFF_MSG] push notify error:", notifyErr.message || notifyErr);
+    }
 
     return res.status(201).json({
       ok: true,
