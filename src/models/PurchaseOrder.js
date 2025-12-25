@@ -52,6 +52,7 @@ const PurchaseOrder = sequelize.define(
     tenantId: {
       type: DataTypes.STRING(64),
       allowNull: true,
+      defaultValue: "default",
     },
     requestedBy: {
       type: DataTypes.STRING,

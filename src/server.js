@@ -125,9 +125,21 @@ Promise.all([
   PurchaseOrder.sync({ alter: true }),
   PurchaseOrderMessage.sync({ alter: true }),
   OwnerSetting.sync(),
-]).catch((err) =>
-  console.error("[MSG] sync error:", err.message || err)
-);
+])
+  .then(async () => {
+    const models = [StaffUser, StaffKey, StaffMessage, PurchaseOrder, PurchaseOrderMessage];
+    for (const model of models) {
+      try {
+        await model.update(
+          { tenantId: "default" },
+          { where: { tenantId: null } }
+        );
+      } catch (err) {
+        console.warn(`[TENANT_BACKFILL] ${model.name}: ${err.message || err}`);
+      }
+    }
+  })
+  .catch((err) => console.error("[MSG] sync error:", err.message || err));
 
 // Purge messages older than 24h every hour
 const PURGE_MS = 24 * 60 * 60 * 1000;

@@ -17,6 +17,7 @@ const StaffKey = sequelize.define(
     tenantId: {
       type: DataTypes.STRING(64),
       allowNull: true,
+      defaultValue: "default",
     },
     publicKey: {
       type: DataTypes.TEXT,

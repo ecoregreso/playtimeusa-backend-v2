@@ -13,6 +13,7 @@ const StaffUser = sequelize.define(
     tenantId: {
       type: DataTypes.STRING(64),
       allowNull: true,
+      defaultValue: "default",
     },
     username: {
       type: DataTypes.STRING(64),

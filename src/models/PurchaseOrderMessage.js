@@ -31,6 +31,7 @@ const PurchaseOrderMessage = sequelize.define(
     tenantId: {
       type: DataTypes.STRING(64),
       allowNull: true,
+      defaultValue: "default",
     },
     body: {
       type: DataTypes.TEXT,
