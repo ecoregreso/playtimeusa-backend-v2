@@ -148,6 +148,8 @@ router.get("/messages", staffAuth, async (req, res) => {
         ciphertext: m.ciphertext,
         createdAt: m.createdAt,
         readAt: m.readAt,
+        fromUsername: m.fromId === req.staff.id ? req.staff.username : undefined,
+        toUsername: m.toId === req.staff.id ? req.staff.username : undefined,
       })),
     });
   } catch (err) {
