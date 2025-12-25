@@ -23,6 +23,11 @@ const StaffKey = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: false,
     },
+    // Optional encrypted private key for restoring on login
+    encryptedPrivateKey: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
     createdAt: {
       type: DataTypes.DATE,
       allowNull: false,

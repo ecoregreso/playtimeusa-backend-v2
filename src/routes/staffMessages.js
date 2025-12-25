@@ -14,6 +14,9 @@ function threadIdForPair(a, b) {
 router.post("/keys", staffAuth, async (req, res) => {
   try {
     const publicKey = String(req.body.publicKey || "").trim();
+    const encryptedPrivateKey = req.body.encryptedPrivateKey
+      ? String(req.body.encryptedPrivateKey).trim()
+      : null;
     if (!publicKey) {
       return res.status(400).json({ ok: false, error: "publicKey is required" });
     }
@@ -22,12 +25,43 @@ router.post("/keys", staffAuth, async (req, res) => {
       staffId: req.staff.id,
       tenantId: req.staff?.tenantId,
       publicKey,
+      encryptedPrivateKey,
     });
 
-    return res.json({ ok: true, key: { staffId: key.staffId, publicKey: key.publicKey } });
+    return res.json({
+      ok: true,
+      key: {
+        staffId: key.staffId,
+        publicKey: key.publicKey,
+        encryptedPrivateKey: key.encryptedPrivateKey,
+      },
+    });
   } catch (err) {
     console.error("[STAFF_KEYS] upsert error:", err);
     return res.status(500).json({ ok: false, error: "Failed to save key" });
+  }
+});
+
+// Fetch own key pair (private key only for self)
+router.get("/keys/self", staffAuth, async (req, res) => {
+  try {
+    const key = await StaffKey.findOne({
+      where: { staffId: req.staff.id, tenantId: req.staff?.tenantId },
+    });
+    if (!key) {
+      return res.status(404).json({ ok: false, error: "Key not found" });
+    }
+    return res.json({
+      ok: true,
+      key: {
+        staffId: key.staffId,
+        publicKey: key.publicKey,
+        encryptedPrivateKey: key.encryptedPrivateKey,
+      },
+    });
+  } catch (err) {
+    console.error("[STAFF_KEYS] self fetch error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to fetch key" });
   }
 });
 
