@@ -5,6 +5,11 @@ const { StaffUser, StaffKey, StaffMessage } = require("../models");
 
 const router = express.Router();
 
+function threadIdForPair(a, b) {
+  const [minId, maxId] = [a, b].sort((x, y) => x - y);
+  return `thread:${minId}:${maxId}`;
+}
+
 // Upsert public key for current staff user
 router.post("/keys", staffAuth, async (req, res) => {
   try {
@@ -74,15 +79,17 @@ router.post("/messages", staffAuth, async (req, res) => {
       return res.status(404).json({ ok: false, error: "Recipient not found or inactive" });
     }
 
-      const msg = await StaffMessage.create({
-        threadId,
-        fromId: req.staff.id,
-        toId: recipient.id,
-        tenantId: req.staff?.tenantId,
-        ciphertext,
-        type,
-        createdAt: new Date(),
-      });
+    const computedThread = threadIdForPair(req.staff.id, recipient.id);
+
+    const msg = await StaffMessage.create({
+      threadId: threadId || computedThread,
+      fromId: req.staff.id,
+      toId: recipient.id,
+      tenantId: req.staff?.tenantId,
+      ciphertext,
+      type,
+      createdAt: new Date(),
+    });
 
     return res.status(201).json({
       ok: true,
@@ -109,6 +116,7 @@ router.get("/messages", staffAuth, async (req, res) => {
     const threadId = req.query.threadId ? String(req.query.threadId).trim() : null;
 
     let where = { tenantId: req.staff?.tenantId };
+    let participants = new Map([[req.staff.id, req.staff.username]]);
 
     if (threadId) {
       where.threadId = threadId;
@@ -119,8 +127,11 @@ router.get("/messages", staffAuth, async (req, res) => {
       if (!other) {
         return res.status(404).json({ ok: false, error: "User not found" });
       }
+      participants.set(other.id, other.username);
+      const computedThread = threadIdForPair(req.staff.id, other.id);
       where = {
         [Op.or]: [
+          { threadId: computedThread },
           { fromId: req.staff.id, toId: other.id },
           { fromId: other.id, toId: req.staff.id },
         ],
@@ -148,8 +159,8 @@ router.get("/messages", staffAuth, async (req, res) => {
         ciphertext: m.ciphertext,
         createdAt: m.createdAt,
         readAt: m.readAt,
-        fromUsername: m.fromId === req.staff.id ? req.staff.username : undefined,
-        toUsername: m.toId === req.staff.id ? req.staff.username : undefined,
+        fromUsername: participants.get(m.fromId),
+        toUsername: participants.get(m.toId),
       })),
     });
   } catch (err) {
@@ -173,6 +184,26 @@ router.post("/messages/:id/read", staffAuth, async (req, res) => {
   } catch (err) {
     console.error("[STAFF_MSG] read error:", err);
     return res.status(500).json({ ok: false, error: "Failed to mark read" });
+  }
+});
+
+// Delete (sender or recipient)
+router.delete("/messages/:id", staffAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const msg = await StaffMessage.findByPk(id);
+    if (!msg) return res.status(404).json({ ok: false, error: "Not found" });
+    if (msg.tenantId !== req.staff?.tenantId) {
+      return res.status(403).json({ ok: false, error: "Forbidden" });
+    }
+    if (msg.fromId !== req.staff.id && msg.toId !== req.staff.id) {
+      return res.status(403).json({ ok: false, error: "Forbidden" });
+    }
+    await msg.destroy();
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[STAFF_MSG] delete error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to delete message" });
   }
 });
 
