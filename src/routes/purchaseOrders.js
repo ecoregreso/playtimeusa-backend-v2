@@ -5,7 +5,10 @@ const {
   PurchaseOrder,
   PurchaseOrderMessage,
   OwnerSetting,
+  StaffUser,
+  StaffMessage,
 } = require("../models");
+const { sequelize } = require("../db");
 const { staffAuth, requirePermission } = require("../middleware/staffAuth");
 const { PERMISSIONS } = require("../constants/permissions");
 
@@ -23,6 +26,11 @@ const STATUS = {
 
 function ownerKey(tenantId) {
   return `${tenantId || DEFAULT_TENANT}:ownerBtcAddress`;
+}
+
+function threadIdForPair(a, b) {
+  const [minId, maxId] = [a, b].sort((x, y) => x - y);
+  return `thread:${minId}:${maxId}`;
 }
 
 async function getOwnerAddress(tenantId) {
@@ -111,6 +119,41 @@ router.post(
           tenantId: req.staff?.tenantId || DEFAULT_TENANT,
         });
       }
+
+       // Send a plain-text inbox notification to owners in this tenant
+       try {
+         const owners = await StaffUser.findAll({
+           where: {
+             tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+             isActive: true,
+             [Op.or]: [
+               { role: "owner" },
+               sequelize.where(
+                 sequelize.cast(sequelize.col("permissions"), "text"),
+                 { [Op.iLike]: `%${PERMISSIONS.FINANCE_WRITE}%` }
+               ),
+             ],
+           },
+         });
+         const senderId = req.staff?.id;
+         const summary = `New funcoin order #${order.id} by ${order.requestedBy}: ${order.funAmount} FC -> ${order.btcAmount} BTC @ ${order.btcRate || "n/a"} (status: ${order.status})`;
+         const tenantId = req.staff?.tenantId || DEFAULT_TENANT;
+         for (const owner of owners) {
+           if (!senderId || !owner.id) continue;
+           const threadId = threadIdForPair(senderId, owner.id);
+           await StaffMessage.create({
+             threadId,
+             fromId: senderId,
+             toId: owner.id,
+             tenantId,
+             type: "purchase_order",
+             ciphertext: summary,
+             createdAt: new Date(),
+           });
+         }
+       } catch (notifyErr) {
+         console.error("[PO] notify owner error:", notifyErr);
+       }
 
       res.status(201).json({ ok: true, order });
     } catch (err) {
