@@ -10,6 +10,7 @@ const {
 } = require("../models");
 const { sequelize } = require("../db");
 const { sendPushToStaffIds } = require("../utils/push");
+const { sendUrgentEmail } = require("../utils/email");
 const { staffAuth, requirePermission } = require("../middleware/staffAuth");
 const { PERMISSIONS } = require("../constants/permissions");
 
@@ -37,6 +38,49 @@ function threadIdForPair(a, b) {
 async function getOwnerAddress(tenantId) {
   const row = await OwnerSetting.findByPk(ownerKey(tenantId));
   return row?.value || "";
+}
+
+async function getOwners(tenantId) {
+  return StaffUser.findAll({
+    where: {
+      tenantId: tenantId || DEFAULT_TENANT,
+      isActive: true,
+      [Op.or]: [
+        { role: "owner" },
+        sequelize.where(
+          sequelize.cast(sequelize.col("permissions"), "text"),
+          { [Op.iLike]: `%${PERMISSIONS.FINANCE_WRITE}%` }
+        ),
+      ],
+    },
+  });
+}
+
+async function notifyOwnersByEmail(owners) {
+  const unique = new Set();
+  for (const owner of owners) {
+    const email = owner?.email ? String(owner.email).trim() : "";
+    if (!email) continue;
+    const key = email.toLowerCase();
+    if (unique.has(key)) continue;
+    unique.add(key);
+    await sendUrgentEmail(email);
+  }
+}
+
+async function notifyOrderStatusByEmail({ tenantId, order }) {
+  const owners = await getOwners(tenantId);
+  const requester = order?.requestedById ? await StaffUser.findByPk(order.requestedById) : null;
+  const recipients = [...owners, requester].filter(Boolean);
+  const unique = new Set();
+  for (const user of recipients) {
+    const email = user?.email ? String(user.email).trim() : "";
+    if (!email) continue;
+    const key = email.toLowerCase();
+    if (unique.has(key)) continue;
+    unique.add(key);
+    await sendUrgentEmail(email);
+  }
 }
 
 async function addMessage({ orderId, sender, senderRole, body, tenantId }) {
@@ -123,19 +167,7 @@ router.post(
 
        // Send a plain-text inbox notification to owners in this tenant
        try {
-         const owners = await StaffUser.findAll({
-           where: {
-             tenantId: req.staff?.tenantId || DEFAULT_TENANT,
-             isActive: true,
-             [Op.or]: [
-               { role: "owner" },
-               sequelize.where(
-                 sequelize.cast(sequelize.col("permissions"), "text"),
-                 { [Op.iLike]: `%${PERMISSIONS.FINANCE_WRITE}%` }
-               ),
-             ],
-           },
-         });
+         const owners = await getOwners(req.staff?.tenantId || DEFAULT_TENANT);
          const senderId = req.staff?.id;
          const summary = `New funcoin order #${order.id} by ${order.requestedBy}: ${order.funAmount} FC -> ${order.btcAmount} BTC @ ${order.btcRate || "n/a"} (status: ${order.status})`;
          const tenantId = req.staff?.tenantId || DEFAULT_TENANT;
@@ -162,6 +194,7 @@ router.post(
              data: { type: "purchase_order", id: order.id },
            });
          }
+         await notifyOwnersByEmail(owners);
        } catch (notifyErr) {
          console.error("[PO] notify owner error:", notifyErr);
        }
@@ -298,6 +331,11 @@ router.post(
         tenantId: req.staff?.tenantId || DEFAULT_TENANT,
       });
 
+      await notifyOrderStatusByEmail({
+        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        order,
+      });
+
       res.json({ ok: true, order });
     } catch (err) {
       console.error("[PO] approve error:", err);
@@ -346,6 +384,11 @@ router.post(
         tenantId: req.staff?.tenantId || DEFAULT_TENANT,
       });
 
+      await notifyOrderStatusByEmail({
+        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        order,
+      });
+
       res.json({ ok: true, order });
     } catch (err) {
       console.error("[PO] confirm-payment error:", err);
@@ -381,6 +424,11 @@ router.post(
         senderRole: req.staff?.role || "owner",
         body,
         tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+      });
+
+      await notifyOrderStatusByEmail({
+        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        order,
       });
 
       res.json({ ok: true, order });
@@ -423,6 +471,11 @@ router.post(
         senderRole: req.staff?.role || "agent",
         body,
         tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+      });
+
+      await notifyOrderStatusByEmail({
+        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        order,
       });
 
       res.json({ ok: true, order });

@@ -20,6 +20,10 @@ const StaffUser = sequelize.define(
       allowNull: false,
       unique: true,
     },
+    email: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
     passwordHash: {
       type: DataTypes.STRING(255),
       allowNull: false,
@@ -60,7 +64,7 @@ const StaffUser = sequelize.define(
   {
     tableName: "staff_users",
     timestamps: true,
-    indexes: [{ fields: ["tenantId"] }],
+    indexes: [{ fields: ["tenantId"] }, { fields: ["email"] }],
   }
 );
 

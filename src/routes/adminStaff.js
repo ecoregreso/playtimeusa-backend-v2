@@ -27,6 +27,7 @@ router.get("/", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, res) =>
       staff: staff.map((s) => ({
         id: s.id,
         username: s.username,
+        email: s.email,
         role: s.role,
         agentCode: s.agentCode,
         parentId: s.parentId,
@@ -44,7 +45,15 @@ router.get("/", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, res) =>
 // POST /api/v1/admin/staff
 router.post("/", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, res) => {
   try {
-    const { username, password, role = "cashier", agentCode, parentId, isActive = true } = req.body || {};
+    const {
+      username,
+      email,
+      password,
+      role = "cashier",
+      agentCode,
+      parentId,
+      isActive = true,
+    } = req.body || {};
 
     if (!username || !password) {
       return res.status(400).json({ ok: false, error: "username and password are required" });
@@ -67,6 +76,7 @@ router.post("/", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, res) =
 
     const staff = await StaffUser.create({
       username,
+      email: email || null,
       passwordHash,
       role,
       agentCode: agentCode || null,
@@ -79,6 +89,7 @@ router.post("/", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, res) =
       staff: {
         id: staff.id,
         username: staff.username,
+        email: staff.email,
         role: staff.role,
         agentCode: staff.agentCode,
         parentId: staff.parentId,
@@ -97,7 +108,7 @@ router.post("/", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, res) =
 router.patch("/:id", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, res) => {
   try {
     const { id } = req.params;
-    const { role, isActive } = req.body || {};
+    const { role, isActive, permissions, email } = req.body || {};
 
     const staff = await StaffUser.findByPk(id);
     if (!staff) {
@@ -118,6 +129,14 @@ router.patch("/:id", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, re
       staff.isActive = !!isActive;
     }
 
+    if (permissions !== undefined) {
+      staff.permissions = Array.isArray(permissions) ? permissions : staff.permissions;
+    }
+
+    if (email !== undefined) {
+      staff.email = email || null;
+    }
+
     await staff.save();
 
     res.json({
@@ -125,6 +144,7 @@ router.patch("/:id", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, re
       staff: {
         id: staff.id,
         username: staff.username,
+        email: staff.email,
         role: staff.role,
         agentCode: staff.agentCode,
         parentId: staff.parentId,
