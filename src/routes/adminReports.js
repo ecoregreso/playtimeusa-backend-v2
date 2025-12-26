@@ -139,6 +139,14 @@ const BONUS_RATIO_THRESHOLD = 0.5;
 const BONUS_TO_BET_THRESHOLD = 0.3;
 const BONUS_REDEMPTION_THRESHOLD = 5;
 
+const DEFAULT_EXPECTED_RTP = 0.96;
+const EXPECTED_RTP_BY_GAME = {};
+
+function getExpectedRtp(gameId) {
+  if (!gameId) return DEFAULT_EXPECTED_RTP;
+  return EXPECTED_RTP_BY_GAME[gameId] ?? DEFAULT_EXPECTED_RTP;
+}
+
 // GET /admin/reports/range?start=YYYY-MM-DD&end=YYYY-MM-DD
 router.get(
   "/range",
@@ -969,6 +977,163 @@ router.get(
     } catch (err) {
       console.error("[ADMIN_REPORTS_RISK] error:", err);
       res.status(500).json({ ok: false, error: "Failed to build risk report" });
+    }
+  }
+);
+
+// GET /admin/reports/performance?start=YYYY-MM-DD&end=YYYY-MM-DD
+router.get(
+  "/performance",
+  requireStaffAuth([PERMISSIONS.FINANCE_READ]),
+  async (req, res) => {
+    let range;
+    try {
+      range = buildDateRange(req);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    const { start, end, startDate, endDateExclusive } = range;
+    const dayList = buildDayList(startDate, endDateExclusive);
+
+    try {
+      const [gameAgg, spinRows, volatilityRows] = await Promise.all([
+        GameRound.findAll({
+          where: {
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            ["gameId", "gameId"],
+            [fn("COUNT", literal("*")), "rounds"],
+            [fn("SUM", col("betAmount")), "totalBet"],
+            [fn("SUM", col("winAmount")), "totalWin"],
+          ],
+          group: ["gameId"],
+        }).catch((err) => {
+          console.warn("[REPORTS] GameRound RTP aggregate failed:", err.message);
+          return [];
+        }),
+        GameRound.findAll({
+          where: {
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            [literal(`DATE("createdAt")`), "day"],
+            [fn("COUNT", literal("*")), "spins"],
+          ],
+          group: [literal(`DATE("createdAt")`)],
+          order: [[literal(`DATE("createdAt")`), "ASC"]],
+        }).catch((err) => {
+          console.warn("[REPORTS] GameRound spin volume failed:", err.message);
+          return [];
+        }),
+        GameRound.findAll({
+          where: {
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            ["gameId", "gameId"],
+            [literal(`DATE("createdAt")`), "day"],
+            [fn("COUNT", literal("*")), "rounds"],
+            [literal('SUM("winAmount" - "betAmount")'), "sumNet"],
+            [
+              literal(
+                'SUM(("winAmount" - "betAmount") * ("winAmount" - "betAmount"))'
+              ),
+              "sumSquares",
+            ],
+          ],
+          group: ["gameId", literal(`DATE("createdAt")`)],
+          order: [[literal(`DATE("createdAt")`), "ASC"]],
+        }).catch((err) => {
+          console.warn("[REPORTS] GameRound volatility aggregate failed:", err.message);
+          return [];
+        }),
+      ]);
+
+      const rtpByGame = (gameAgg || [])
+        .map((row) => {
+          const gameId = row.get("gameId") || row.gameId;
+          const rounds = Number(row.get("rounds") || 0);
+          const totalBet = Number(row.get("totalBet") || 0);
+          const totalWin = Number(row.get("totalWin") || 0);
+          const actualRtp = totalBet > 0 ? totalWin / totalBet : 0;
+          const expectedRtp = getExpectedRtp(gameId);
+          return {
+            gameId,
+            rounds,
+            totalBet,
+            totalWin,
+            actualRtp,
+            expectedRtp,
+            deviation: actualRtp - expectedRtp,
+          };
+        })
+        .sort((a, b) => b.totalBet - a.totalBet);
+
+      const spinMap = {};
+      for (const row of spinRows || []) {
+        const day = toDay(row.get("day"));
+        if (!day) continue;
+        spinMap[day] = Number(row.get("spins") || 0);
+      }
+      const spinDays = dayList.map((day) => ({
+        day,
+        spins: spinMap[day] || 0,
+      }));
+
+      let maxVolatility = 0;
+      const volatilityCells = [];
+      for (const row of volatilityRows || []) {
+        const day = toDay(row.get("day"));
+        const gameId = row.get("gameId") || row.gameId;
+        if (!day || !gameId) continue;
+        const rounds = Number(row.get("rounds") || 0);
+        const sumNet = Number(row.get("sumNet") || 0);
+        const sumSquares = Number(row.get("sumSquares") || 0);
+        let volatility = 0;
+        if (rounds > 0) {
+          const mean = sumNet / rounds;
+          const variance = sumSquares / rounds - mean * mean;
+          volatility = variance > 0 ? Math.sqrt(variance) : 0;
+        }
+        if (volatility > maxVolatility) maxVolatility = volatility;
+        volatilityCells.push({
+          day,
+          gameId,
+          volatility,
+          rounds,
+        });
+      }
+
+      res.json({
+        ok: true,
+        period: { start, end, label: `${start} → ${end}` },
+        rtpByGame: {
+          games: rtpByGame,
+        },
+        volatility: {
+          days: dayList,
+          games: rtpByGame.map((game) => String(game.gameId)),
+          cells: volatilityCells,
+          max: maxVolatility,
+        },
+        spinVolume: {
+          days: spinDays,
+        },
+      });
+    } catch (err) {
+      console.error("[ADMIN_REPORTS_PERFORMANCE] error:", err);
+      res.status(500).json({ ok: false, error: "Failed to build performance report" });
     }
   }
 );
