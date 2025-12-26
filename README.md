@@ -69,3 +69,70 @@ Data sources:
 To add a new game to analytics:
 1) Emit ledger events with `gameKey` on every bet/spin/win.
 2) Add or update `game_configs` with the expected RTP.
+
+## Player Safety Engine (PSE)
+
+PSE is a telemetry + risk scoring layer that does **not** affect game outcomes. Games should post
+session telemetry after each spin and optionally set a loss limit at session start.
+
+Player routes:
+- `POST /api/v1/safety/loss-limit` — set a session loss limit
+- `POST /api/v1/safety/event` — send per-spin telemetry and receive any safety action
+
+Example: set loss limit (once per session; can be lowered, never increased):
+```
+POST /api/v1/safety/loss-limit
+Headers: Authorization: Bearer <player_access_token>
+Headers: x-session-id: <session_id>
+Body: { "lossLimitCents": 5000 }
+```
+
+Example response:
+```
+{ "ok": true, "lossLimitCents": 5000, "locked": true }
+```
+
+Example: send a spin telemetry event:
+```
+POST /api/v1/safety/event
+Headers: Authorization: Bearer <player_access_token>
+Headers: x-session-id: <session_id>
+Body: {
+  "gameKey": "neon-slot",
+  "eventType": "SPIN",
+  "betCents": 200,
+  "winCents": 0,
+  "balanceCents": 3200,
+  "clientTs": "2025-12-26T18:45:10.000Z",
+  "meta": { "spinMs": 980 }
+}
+```
+
+Example responses:
+```
+// Nudge
+{
+  "ok": true,
+  "risk": { "score": 35, "band": "ELEVATED", "reasons": ["BET_ACCEL"] },
+  "action": { "actionType": "NUDGE", "message": "Quick check-in: your pace/bets changed a lot in the last few minutes. Want to take a short break?" }
+}
+```
+
+```
+// Cooldown
+{
+  "ok": true,
+  "risk": { "score": 60, "band": "TILT_RISK", "reasons": ["LOSS_STREAK", "SPIN_RATE"] },
+  "action": { "actionType": "COOLDOWN", "cooldownSeconds": 90, "message": "Let’s pause for 90s. Your balance and session will still be here." }
+}
+```
+
+```
+// Loss limit reached
+{
+  "ok": false,
+  "code": "LOSS_LIMIT_REACHED",
+  "message": "Loss limit reached for this session.",
+  "action": { "actionType": "STOP" }
+}
+```

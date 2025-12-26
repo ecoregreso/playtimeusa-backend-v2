@@ -6,6 +6,8 @@ const cors = require("cors");
 const morgan = require("morgan");
 const reportsRoutes = require("./routes/adminReports");
 const analyticsRoutes = require("./routes/adminAnalytics");
+const safetyRoutes = require("./routes/safety");
+const adminSafetyRoutes = require("./routes/adminSafety");
 
 // Route modules
 const authRoutes = require("./routes/auth");
@@ -36,6 +38,9 @@ const {
   SessionSnapshot,
   GameConfig,
   SupportTicket,
+  SafetyTelemetryEvent,
+  PlayerSafetyLimit,
+  PlayerSafetyAction,
 } = require("./models");
 const { Op } = require("sequelize");
 const { buildRequestMeta } = require("./services/ledgerService");
@@ -133,11 +138,13 @@ app.use("/vouchers", voucherRoutes);
 app.use("/admin/players", adminPlayersRoutes);
 app.use("/admin/reports", reportsRoutes);
 app.use("/admin/analytics", analyticsRoutes);
+app.use("/admin/safety", adminSafetyRoutes);
 app.use("/admin/staff", adminStaffRoutes);
 app.use("/admin/transactions", adminTransactionsRoutes);
 app.use("/admin/sessions", adminSessionsRoutes);
 app.use("/admin/audit", adminAuditRoutes);
 app.use("/player", playerRoutes);
+app.use("/safety", safetyRoutes);
 app.use("/games", gamesRoutes);
 app.use("/deposits", financeRoutes);
 app.use("/withdrawals", financeRoutes);
@@ -148,6 +155,7 @@ app.use("/api/v1/vouchers", voucherRoutes);
 app.use("/api/v1/admin/players", adminPlayersRoutes);
 app.use("/api/v1/admin/reports", reportsRoutes);
 app.use("/api/v1/admin/analytics", analyticsRoutes);
+app.use("/api/v1/admin/safety", adminSafetyRoutes);
 app.use("/api/v1/staff", staffAuthRoutes);
 app.use("/api/v1/staff/messaging", staffMessagesRoutes);
 app.use("/api/v1/staff/push", staffPushRoutes);
@@ -156,6 +164,7 @@ app.use("/api/v1/admin/transactions", adminTransactionsRoutes);
 app.use("/api/v1/admin/sessions", adminSessionsRoutes);
 app.use("/api/v1/admin/audit", adminAuditRoutes);
 app.use("/api/v1/player", playerRoutes);
+app.use("/api/v1/safety", safetyRoutes);
 app.use("/api/v1/games", gamesRoutes);
 app.use("/api/v1", financeRoutes);
 app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
@@ -167,6 +176,9 @@ Promise.all([
   GameConfig.sync({ alter: true }),
   ApiErrorEvent.sync({ alter: true }),
   SupportTicket.sync({ alter: true }),
+  SafetyTelemetryEvent.sync({ alter: true }),
+  PlayerSafetyLimit.sync({ alter: true }),
+  PlayerSafetyAction.sync({ alter: true }),
   StaffUser.sync({ alter: true }),
   StaffKey.sync({ alter: true }),
   StaffMessage.sync({ alter: true }),

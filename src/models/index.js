@@ -16,6 +16,9 @@ const SessionSnapshot = require("./SessionSnapshot");
 const GameConfig = require("./GameConfig");
 const ApiErrorEvent = require("./ApiErrorEvent");
 const SupportTicket = require("./SupportTicket");
+const SafetyTelemetryEvent = require("./SafetyTelemetryEvent");
+const PlayerSafetyLimit = require("./PlayerSafetyLimit");
+const PlayerSafetyAction = require("./PlayerSafetyAction");
 const StaffKey = require("./StaffKey");
 const StaffMessage = require("./StaffMessage");
 const StaffPushDevice = require("./StaffPushDevice");
@@ -40,6 +43,9 @@ module.exports = {
   GameConfig,
   ApiErrorEvent,
   SupportTicket,
+  SafetyTelemetryEvent,
+  PlayerSafetyLimit,
+  PlayerSafetyAction,
   StaffKey,
   StaffMessage,
   StaffPushDevice,
