@@ -12,6 +12,9 @@ const {
   GameRound,
   Wallet,
   Session,
+  DepositIntent,
+  WithdrawalIntent,
+  StaffUser,
 } = require("../models");
 
 const { requireStaffAuth, PERMISSIONS } = require("../middleware/staffAuth");
@@ -120,6 +123,31 @@ function buildHistogram(values, bins) {
   return counts;
 }
 
+function percentile(sorted, p) {
+  if (!sorted.length) return null;
+  const idx = (sorted.length - 1) * p;
+  const lower = Math.floor(idx);
+  const upper = Math.ceil(idx);
+  if (lower === upper) return sorted[lower];
+  const weight = idx - lower;
+  return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+}
+
+function summarizeDistribution(values) {
+  const sorted = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+  if (!sorted.length) {
+    return { count: 0, min: null, q1: null, median: null, q3: null, max: null };
+  }
+  return {
+    count: sorted.length,
+    min: sorted[0],
+    q1: percentile(sorted, 0.25),
+    median: percentile(sorted, 0.5),
+    q3: percentile(sorted, 0.75),
+    max: sorted[sorted.length - 1],
+  };
+}
+
 function normalizeIp(value) {
   if (!value) return null;
   const raw = Array.isArray(value) ? value[0] : String(value);
@@ -138,6 +166,8 @@ const BONUS_MIN_TOTAL = 25;
 const BONUS_RATIO_THRESHOLD = 0.5;
 const BONUS_TO_BET_THRESHOLD = 0.3;
 const BONUS_REDEMPTION_THRESHOLD = 5;
+
+const FAILED_BET_STALE_MINUTES = 10;
 
 const DEFAULT_EXPECTED_RTP = 0.96;
 const EXPECTED_RTP_BY_GAME = {};
@@ -977,6 +1007,253 @@ router.get(
     } catch (err) {
       console.error("[ADMIN_REPORTS_RISK] error:", err);
       res.status(500).json({ ok: false, error: "Failed to build risk report" });
+    }
+  }
+);
+
+// GET /admin/reports/operations?start=YYYY-MM-DD&end=YYYY-MM-DD
+router.get(
+  "/operations",
+  requireStaffAuth([PERMISSIONS.FINANCE_READ]),
+  async (req, res) => {
+    let range;
+    try {
+      range = buildDateRange(req);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    const { start, end, startDate, endDateExclusive } = range;
+    const dayList = buildDayList(startDate, endDateExclusive);
+    const now = new Date();
+    const rangeEnd = endDateExclusive < now ? endDateExclusive : now;
+    const staleCutoff = new Date(rangeEnd.getTime() - FAILED_BET_STALE_MINUTES * 60000);
+
+    try {
+      const [
+        pendingRounds,
+        staleRounds,
+        issuedRows,
+        redeemedRows,
+        expiredRows,
+        deposits,
+        withdrawals,
+      ] = await Promise.all([
+        GameRound.findAll({
+          where: {
+            status: { [Op.ne]: "settled" },
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            [literal(`DATE("createdAt")`), "day"],
+            [fn("COUNT", literal("*")), "count"],
+          ],
+          group: [literal(`DATE("createdAt")`)],
+          order: [[literal(`DATE("createdAt")`), "ASC"]],
+        }),
+        staleCutoff > startDate
+          ? GameRound.findAll({
+              where: {
+                status: { [Op.ne]: "settled" },
+                createdAt: {
+                  [Op.gte]: startDate,
+                  [Op.lt]: staleCutoff < endDateExclusive ? staleCutoff : endDateExclusive,
+                },
+              },
+              attributes: [
+                [literal(`DATE("createdAt")`), "day"],
+                [fn("COUNT", literal("*")), "count"],
+              ],
+              group: [literal(`DATE("createdAt")`)],
+              order: [[literal(`DATE("createdAt")`), "ASC"]],
+            })
+          : [],
+        Voucher.findAll({
+          where: {
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            [literal(`DATE("createdAt")`), "day"],
+            [fn("COUNT", literal("*")), "count"],
+          ],
+          group: [literal(`DATE("createdAt")`)],
+          order: [[literal(`DATE("createdAt")`), "ASC"]],
+        }),
+        Voucher.findAll({
+          where: {
+            redeemedAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            [literal(`DATE("redeemedAt")`), "day"],
+            [fn("COUNT", literal("*")), "count"],
+          ],
+          group: [literal(`DATE("redeemedAt")`)],
+          order: [[literal(`DATE("redeemedAt")`), "ASC"]],
+        }),
+        Voucher.findAll({
+          where: {
+            expiresAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+              [Op.lte]: now,
+            },
+            redeemedAt: { [Op.is]: null },
+          },
+          attributes: [
+            [literal(`DATE("expiresAt")`), "day"],
+            [fn("COUNT", literal("*")), "count"],
+          ],
+          group: [literal(`DATE("expiresAt")`)],
+          order: [[literal(`DATE("expiresAt")`), "ASC"]],
+        }),
+        DepositIntent.findAll({
+          where: {
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+            creditedAt: { [Op.not]: null },
+          },
+          attributes: ["createdAt", "creditedAt", "metadata"],
+        }),
+        WithdrawalIntent.findAll({
+          where: {
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+            sentAt: { [Op.not]: null },
+          },
+          attributes: ["createdAt", "sentAt", "metadata"],
+        }),
+      ]);
+
+      const pendingMap = {};
+      for (const row of pendingRounds) {
+        const day = row.get("day");
+        pendingMap[day] = Number(row.get("count") || 0);
+      }
+      const staleMap = {};
+      for (const row of staleRounds) {
+        const day = row.get("day");
+        staleMap[day] = Number(row.get("count") || 0);
+      }
+
+      const systemDays = dayList.map((day) => ({
+        day,
+        pendingBets: pendingMap[day] || 0,
+        failedBets: staleMap[day] || 0,
+      }));
+
+      const issuedMap = {};
+      for (const row of issuedRows) {
+        const day = row.get("day");
+        issuedMap[day] = Number(row.get("count") || 0);
+      }
+      const redeemedMap = {};
+      for (const row of redeemedRows) {
+        const day = row.get("day");
+        redeemedMap[day] = Number(row.get("count") || 0);
+      }
+      const expiredMap = {};
+      for (const row of expiredRows) {
+        const day = row.get("day");
+        expiredMap[day] = Number(row.get("count") || 0);
+      }
+
+      const cashierDays = dayList.map((day) => ({
+        day,
+        issued: issuedMap[day] || 0,
+        redeemed: redeemedMap[day] || 0,
+        expired: expiredMap[day] || 0,
+      }));
+
+      const staffIds = new Set();
+      for (const intent of deposits) {
+        const id = intent?.metadata?.markedByStaffId;
+        if (id) staffIds.add(Number(id));
+      }
+      for (const intent of withdrawals) {
+        const id = intent?.metadata?.markedByStaffId;
+        if (id) staffIds.add(Number(id));
+      }
+
+      const staffRoles = {};
+      if (staffIds.size) {
+        const staffRows = await StaffUser.findAll({
+          where: { id: Array.from(staffIds) },
+          attributes: ["id", "role"],
+        });
+        for (const staff of staffRows) {
+          staffRoles[staff.id] = staff.role;
+        }
+      }
+
+      const supportTimes = [];
+      const cashierTimes = [];
+      const unknownTimes = [];
+
+      const addResolution = (intent, resolvedAt) => {
+        const createdAt = intent.createdAt ? new Date(intent.createdAt) : null;
+        const resolved = resolvedAt ? new Date(resolvedAt) : null;
+        if (!createdAt || !resolved || Number.isNaN(createdAt.getTime()) || Number.isNaN(resolved.getTime())) {
+          return;
+        }
+        const minutes = Math.max(0, (resolved - createdAt) / 60000);
+        const staffId = intent?.metadata?.markedByStaffId;
+        const role = staffId ? staffRoles[Number(staffId)] : null;
+        if (role === "cashier") {
+          cashierTimes.push(minutes);
+        } else if (role) {
+          supportTimes.push(minutes);
+        } else {
+          unknownTimes.push(minutes);
+        }
+      };
+
+      deposits.forEach((intent) => addResolution(intent, intent.creditedAt));
+      withdrawals.forEach((intent) => addResolution(intent, intent.sentAt));
+
+      res.json({
+        ok: true,
+        period: { start, end, label: `${start} → ${end}` },
+        systemHealth: {
+          staleMinutes: FAILED_BET_STALE_MINUTES,
+          days: systemDays,
+        },
+        cashierPerformance: {
+          days: cashierDays,
+          totals: cashierDays.reduce(
+            (acc, day) => {
+              acc.issued += day.issued;
+              acc.redeemed += day.redeemed;
+              acc.expired += day.expired;
+              return acc;
+            },
+            { issued: 0, redeemed: 0, expired: 0 }
+          ),
+        },
+        resolution: {
+          units: "minutes",
+          categories: [
+            { name: "Support", ...summarizeDistribution(supportTimes) },
+            { name: "Cashier", ...summarizeDistribution(cashierTimes) },
+            { name: "Unattributed", ...summarizeDistribution(unknownTimes) },
+          ],
+        },
+      });
+    } catch (err) {
+      console.error("[ADMIN_REPORTS_OPERATIONS] error:", err);
+      res.status(500).json({ ok: false, error: "Failed to build operations report" });
     }
   }
 );
