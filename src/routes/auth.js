@@ -10,6 +10,7 @@ const {
   signAdminToken,
 } = require('../utils/jwt');
 const { requireAuth } = require('../middleware/auth');
+const { buildRequestMeta, recordLedgerEvent } = require("../services/ledgerService");
 
 const router = express.Router();
 
@@ -108,6 +109,16 @@ router.post('/login', async (req, res) => {
 
     const accessToken = signAccessToken(user);
     const refreshToken = signRefreshToken(user);
+
+    if (user.role === "player") {
+      await recordLedgerEvent({
+        ts: new Date(),
+        playerId: user.id,
+        sessionId: null,
+        eventType: "LOGIN",
+        meta: buildRequestMeta(req, { source: "password_login" }),
+      });
+    }
 
     return res.json({
       user: toPublicUser(user),

@@ -7,6 +7,7 @@ const {
   requirePermission,
 } = require("../middleware/staffAuth");
 const { PERMISSIONS } = require("../constants/permissions");
+const analytics = require("../services/analyticsService");
 
 const router = express.Router();
 
@@ -93,6 +94,32 @@ router.get(
     } catch (err) {
       console.error("[ADMIN_AUDIT] error:", err);
       res.status(500).json({ ok: false, error: "Failed to load audit log" });
+    }
+  }
+);
+
+// GET /api/v1/admin/audit/run
+router.get(
+  "/run",
+  staffAuth,
+  requirePermission(PERMISSIONS.FINANCE_READ),
+  async (req, res) => {
+    try {
+      const range = analytics.parseRange(req.query);
+      const findings = await analytics.runAudit(range, {});
+      res.json({
+        ok: true,
+        range: {
+          from: range.from,
+          to: range.to,
+          bucket: range.bucket,
+          timezone: range.timezone,
+        },
+        findings,
+      });
+    } catch (err) {
+      console.error("[ADMIN_AUDIT] run error:", err);
+      res.status(500).json({ ok: false, error: "Failed to run audit" });
     }
   }
 );

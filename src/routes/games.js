@@ -4,6 +4,7 @@ const { Op } = require('sequelize');
 const { sequelize } = require('../db');
 const { Wallet, Transaction, GameRound, Session } = require('../models');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 
 const router = express.Router();
 
@@ -118,6 +119,29 @@ router.post(
       );
 
       await t.commit();
+
+      const betMeta = buildRequestMeta(req, { roundId: round.id });
+      await recordLedgerEvent({
+        ts: new Date(),
+        playerId: req.user.id,
+        sessionId: sessionId ? String(sessionId) : null,
+        gameKey: gameId,
+        eventType: "BET",
+        amountCents: toCents(-amount),
+        betCents: toCents(amount),
+        balanceCents: toCents(balanceAfter),
+        meta: betMeta,
+      });
+
+      await recordLedgerEvent({
+        ts: new Date(),
+        playerId: req.user.id,
+        sessionId: sessionId ? String(sessionId) : null,
+        gameKey: gameId,
+        eventType: "SPIN",
+        betCents: toCents(amount),
+        meta: betMeta,
+      });
 
       return res.status(201).json({
         wallet,
@@ -234,6 +258,20 @@ router.post(
       await round.save({ transaction: t });
 
       await t.commit();
+
+      if (win > 0) {
+        await recordLedgerEvent({
+          ts: new Date(),
+          playerId: round.playerId,
+          sessionId: sessionId ? String(sessionId) : null,
+          gameKey: gameId,
+          eventType: "WIN",
+          amountCents: toCents(win),
+          winCents: toCents(win),
+          balanceCents: toCents(balanceAfter),
+          meta: buildRequestMeta(req, { roundId: round.id }),
+        });
+      }
 
       return res.status(200).json({
         wallet,

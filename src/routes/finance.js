@@ -12,6 +12,7 @@ const {
   requirePermission,
 } = require("../middleware/staffAuth");
 const { PERMISSIONS } = require("../constants/permissions");
+const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 
 const router = express.Router();
 
@@ -93,6 +94,22 @@ router.post(
       };
       await intent.save();
 
+      const staffMeta = buildRequestMeta(req, { staffRole: req.staff?.role || null });
+      await recordLedgerEvent({
+        ts: new Date(),
+        playerId: intent.userId,
+        cashierId: req.staff?.role === "cashier" ? req.staff.id : null,
+        agentId: req.staff?.role === "cashier" ? null : req.staff?.id || null,
+        eventType: "DEPOSIT",
+        amountCents: toCents(intent.amountFun || 0),
+        meta: {
+          ...staffMeta,
+          intentId: intent.id,
+          provider: intent.provider,
+          txid: txid || null,
+        },
+      });
+
       res.json({ ok: true, intent });
     } catch (err) {
       console.error("[FINANCE] mark deposit paid error:", err);
@@ -153,6 +170,22 @@ router.post(
         markedByStaffId: req.staff.id,
       };
       await intent.save();
+
+      const staffMeta = buildRequestMeta(req, { staffRole: req.staff?.role || null });
+      await recordLedgerEvent({
+        ts: new Date(),
+        playerId: intent.userId,
+        cashierId: req.staff?.role === "cashier" ? req.staff.id : null,
+        agentId: req.staff?.role === "cashier" ? null : req.staff?.id || null,
+        eventType: "WITHDRAW",
+        amountCents: toCents(-(intent.amountFun || 0)),
+        meta: {
+          ...staffMeta,
+          intentId: intent.id,
+          provider: intent.provider,
+          txid: txid || null,
+        },
+      });
 
       res.json({ ok: true, intent });
     } catch (err) {

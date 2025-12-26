@@ -11,6 +11,11 @@ const StaffUser = require("./StaffUser");
 const Session = require("./Session");
 const DepositIntent = require("./DepositIntent");
 const WithdrawalIntent = require("./WithdrawalIntent");
+const LedgerEvent = require("./LedgerEvent");
+const SessionSnapshot = require("./SessionSnapshot");
+const GameConfig = require("./GameConfig");
+const ApiErrorEvent = require("./ApiErrorEvent");
+const SupportTicket = require("./SupportTicket");
 const StaffKey = require("./StaffKey");
 const StaffMessage = require("./StaffMessage");
 const StaffPushDevice = require("./StaffPushDevice");
@@ -30,6 +35,11 @@ module.exports = {
   Session,
   DepositIntent,
   WithdrawalIntent,
+  LedgerEvent,
+  SessionSnapshot,
+  GameConfig,
+  ApiErrorEvent,
+  SupportTicket,
   StaffKey,
   StaffMessage,
   StaffPushDevice,

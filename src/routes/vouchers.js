@@ -5,6 +5,7 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 const { staffAuth } = require("../middleware/staffAuth");
 const { Voucher, Wallet, Transaction, User } = require("../models");
 const { generateVoucherQrPng } = require("../utils/qr");
+const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 
 const router = express.Router();
 
@@ -138,6 +139,22 @@ router.post(
           : null,
       };
 
+      const staffMeta = buildRequestMeta(req, { staffRole: req.staff?.role || null });
+      await recordLedgerEvent({
+        ts: new Date(),
+        eventType: "VOUCHER_ISSUED",
+        agentId: req.staff?.role === "cashier" ? null : req.staff?.id || null,
+        cashierId: req.staff?.role === "cashier" ? req.staff?.id || null : null,
+        amountCents: toCents(valueAmount + valueBonus),
+        meta: {
+          ...staffMeta,
+          voucherId: voucher.id,
+          amountCents: toCents(valueAmount),
+          bonusCents: toCents(valueBonus),
+          currency: voucher.currency || "FUN",
+        },
+      });
+
       return res.status(201).json(response);
     } catch (err) {
       console.error("[VOUCHERS] POST / error:", err);
@@ -212,6 +229,22 @@ router.post(
       voucher.redeemedAt = new Date();
       voucher.redeemedByUserId = userId;
       await voucher.save();
+
+      const sessionId = req.headers["x-session-id"] || null;
+      await recordLedgerEvent({
+        ts: new Date(),
+        playerId: userId,
+        sessionId: sessionId ? String(sessionId) : null,
+        eventType: "VOUCHER_REDEEMED",
+        amountCents: toCents(totalCredit),
+        meta: {
+          ...buildRequestMeta(req),
+          voucherId: voucher.id,
+          amountCents: toCents(amount),
+          bonusCents: toCents(bonus),
+          currency,
+        },
+      });
 
       return res.json({
         voucher,

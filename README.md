@@ -31,3 +31,41 @@ Base path: `/api/v1`
 - `POST /bet/spin` — place a demo bet (auth required)
 
 You will need to seed at least one AGENT tenant row and fund its wallet manually (or via future admin routes) to issue vouchers.
+
+## Analytics & Operator Intelligence
+
+Analytics endpoints are staff-protected (JWT) and accept:
+
+Query params:
+- `from` / `to` (ISO)
+- `bucket` (`hour` | `day` | `week`, default `day`)
+- `timezone` (IANA tz, default `America/Los_Angeles`)
+- Optional filters: `agentId`, `cashierId`, `gameKey`, `provider`, `region`
+
+Routes:
+- `GET /api/v1/admin/analytics/overview`
+- `GET /api/v1/admin/analytics/revenue`
+- `GET /api/v1/admin/analytics/players`
+- `GET /api/v1/admin/analytics/games`
+- `GET /api/v1/admin/analytics/ops`
+- `GET /api/v1/admin/analytics/funnel`
+- `GET /api/v1/admin/analytics/ltv`
+- `GET /api/v1/admin/analytics/attribution?metric=ngr`
+- `GET /api/v1/admin/audit/run`
+
+Metric definitions:
+- **Handle**: total bet volume (cents)
+- **Payout**: total wins paid (cents)
+- **NGR**: handle - payout - bonuses
+- **RTP**: wins / bets
+- **LTV (operator)**: bets - wins
+
+Data sources:
+- `ledger_events` is the normalized event stream used by analytics
+- `session_snapshots` is derived from ledger events for session-based metrics
+- `api_error_events` tracks API error rates
+- `game_configs` stores expected RTP per game
+
+To add a new game to analytics:
+1) Emit ledger events with `gameKey` on every bet/spin/win.
+2) Add or update `game_configs` with the expected RTP.

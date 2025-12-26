@@ -3,6 +3,7 @@ const bcrypt = require("bcryptjs");
 
 const { Op } = require("sequelize");
 const { sequelize, User, Wallet, Voucher, Transaction, Session } = require("../models");
+const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { signAccessToken, signRefreshToken } = require("../utils/jwt");
 const { requireAuth } = require("../middleware/auth");
 
@@ -112,6 +113,14 @@ router.post("/login", async (req, res) => {
       const refreshToken = signRefreshToken(user);
       const sessionId = await createPlayerSession(user, req);
 
+      await recordLedgerEvent({
+        ts: new Date(),
+        playerId: user.id,
+        sessionId,
+        eventType: "LOGIN",
+        meta: buildRequestMeta(req, { source: "voucher_relogin" }),
+      });
+
       return res.json({
         ok: true,
         user: {
@@ -145,6 +154,7 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Voucher expired" });
     }
 
+    let redeemMeta = null;
     const result = await sequelize.transaction(async (t) => {
       // Create player if missing (use voucher code as username, synthetic email)
       const email = `${code.toLowerCase()}@player.playtime`;
@@ -170,6 +180,7 @@ router.post("/login", async (req, res) => {
         const amount = Number(voucher.amount || 0);
         const bonus = Number(voucher.bonusAmount || 0);
         const total = amount + bonus;
+        redeemMeta = { voucherId: voucher.id, amount, bonus };
 
         wallet.balance = before + total;
         await wallet.save({ transaction: t });
@@ -206,6 +217,31 @@ router.post("/login", async (req, res) => {
     });
 
     const sessionId = await createPlayerSession(result.user, req);
+    const loginMeta = buildRequestMeta(req, { source: "voucher_login" });
+
+    await recordLedgerEvent({
+      ts: new Date(),
+      playerId: result.user.id,
+      sessionId,
+      eventType: "LOGIN",
+      meta: loginMeta,
+    });
+
+    if (redeemMeta) {
+      await recordLedgerEvent({
+        ts: new Date(),
+        playerId: result.user.id,
+        sessionId,
+        eventType: "VOUCHER_REDEEMED",
+        amountCents: toCents(redeemMeta.amount + redeemMeta.bonus),
+        meta: {
+          ...loginMeta,
+          voucherId: redeemMeta.voucherId,
+          amountCents: toCents(redeemMeta.amount),
+          bonusCents: toCents(redeemMeta.bonus),
+        },
+      });
+    }
 
     return res.json({
       ok: true,

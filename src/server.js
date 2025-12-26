@@ -5,6 +5,7 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const reportsRoutes = require("./routes/adminReports");
+const analyticsRoutes = require("./routes/adminAnalytics");
 
 // Route modules
 const authRoutes = require("./routes/auth");
@@ -30,8 +31,14 @@ const {
   PurchaseOrder,
   PurchaseOrderMessage,
   OwnerSetting,
+  ApiErrorEvent,
+  LedgerEvent,
+  SessionSnapshot,
+  GameConfig,
+  SupportTicket,
 } = require("./models");
 const { Op } = require("sequelize");
+const { buildRequestMeta } = require("./services/ledgerService");
 
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
@@ -88,6 +95,27 @@ if (NODE_ENV !== "test") {
   );
 }
 
+app.use((req, res, next) => {
+  res.on("finish", async () => {
+    if (res.statusCode < 400) return;
+    try {
+      await ApiErrorEvent.create({
+        ts: new Date(),
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: res.statusCode,
+        message: res.locals?.errorMessage || null,
+        meta: buildRequestMeta(req),
+      });
+    } catch (err) {
+      if (NODE_ENV !== "test") {
+        console.warn("[API_ERROR] failed to log error:", err.message || err);
+      }
+    }
+  });
+  next();
+});
+
 // Healthcheck
 app.get("/health", (req, res) => {
   res.json({
@@ -104,6 +132,7 @@ app.use("/wallets", walletRoutes);
 app.use("/vouchers", voucherRoutes);
 app.use("/admin/players", adminPlayersRoutes);
 app.use("/admin/reports", reportsRoutes);
+app.use("/admin/analytics", analyticsRoutes);
 app.use("/admin/staff", adminStaffRoutes);
 app.use("/admin/transactions", adminTransactionsRoutes);
 app.use("/admin/sessions", adminSessionsRoutes);
@@ -118,6 +147,7 @@ app.use("/api/v1/wallets", walletRoutes);
 app.use("/api/v1/vouchers", voucherRoutes);
 app.use("/api/v1/admin/players", adminPlayersRoutes);
 app.use("/api/v1/admin/reports", reportsRoutes);
+app.use("/api/v1/admin/analytics", analyticsRoutes);
 app.use("/api/v1/staff", staffAuthRoutes);
 app.use("/api/v1/staff/messaging", staffMessagesRoutes);
 app.use("/api/v1/staff/push", staffPushRoutes);
@@ -132,6 +162,11 @@ app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
 
 // Ensure messaging tables exist without altering others
 Promise.all([
+  LedgerEvent.sync({ alter: true }),
+  SessionSnapshot.sync({ alter: true }),
+  GameConfig.sync({ alter: true }),
+  ApiErrorEvent.sync({ alter: true }),
+  SupportTicket.sync({ alter: true }),
   StaffUser.sync({ alter: true }),
   StaffKey.sync({ alter: true }),
   StaffMessage.sync({ alter: true }),
