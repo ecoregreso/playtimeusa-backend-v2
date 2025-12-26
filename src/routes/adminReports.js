@@ -2,6 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const { Op, fn, col, literal } = require("sequelize");
+const geoip = require("geoip-lite");
 
 const {
   sequelize,
@@ -118,6 +119,25 @@ function buildHistogram(values, bins) {
   }
   return counts;
 }
+
+function normalizeIp(value) {
+  if (!value) return null;
+  const raw = Array.isArray(value) ? value[0] : String(value);
+  let ip = raw.split(",")[0].trim();
+  if (ip.startsWith("::ffff:")) {
+    ip = ip.slice(7);
+  }
+  return ip || null;
+}
+
+const WIN_RATE_MIN_BET = 50;
+const WIN_RATE_MIN_ROUNDS = 5;
+const WIN_RATE_DEVIATION_THRESHOLD = 0.2;
+
+const BONUS_MIN_TOTAL = 25;
+const BONUS_RATIO_THRESHOLD = 0.5;
+const BONUS_TO_BET_THRESHOLD = 0.3;
+const BONUS_REDEMPTION_THRESHOLD = 5;
 
 // GET /admin/reports/range?start=YYYY-MM-DD&end=YYYY-MM-DD
 router.get(
@@ -701,6 +721,254 @@ router.get(
     } catch (err) {
       console.error("[ADMIN_REPORTS_BEHAVIOR] error:", err);
       res.status(500).json({ ok: false, error: "Failed to build behavior report" });
+    }
+  }
+);
+
+// GET /admin/reports/risk?start=YYYY-MM-DD&end=YYYY-MM-DD
+router.get(
+  "/risk",
+  requireStaffAuth([PERMISSIONS.FINANCE_READ]),
+  async (req, res) => {
+    let range;
+    try {
+      range = buildDateRange(req);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    const { start, end, startDate, endDateExclusive } = range;
+    const rangeDays = buildDayList(startDate, endDateExclusive);
+    const hourList = [];
+    const hourCursor = new Date(startDate);
+    while (hourCursor < endDateExclusive) {
+      hourList.push(hourCursor.toISOString());
+      hourCursor.setUTCHours(hourCursor.getUTCHours() + 1);
+    }
+
+    try {
+      const [
+        playerAgg,
+        voucherAgg,
+        sessionRows,
+        dailyRows,
+        hourlyRows,
+      ] = await Promise.all([
+        GameRound.findAll({
+          where: {
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            ["playerId", "playerId"],
+            [fn("COUNT", literal("*")), "rounds"],
+            [fn("SUM", col("betAmount")), "totalBet"],
+            [fn("SUM", col("winAmount")), "totalWin"],
+          ],
+          group: ["playerId"],
+        }),
+        Voucher.findAll({
+          where: {
+            status: "redeemed",
+            redeemedByUserId: { [Op.not]: null },
+            redeemedAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            ["redeemedByUserId", "playerId"],
+            [fn("COUNT", literal("*")), "redemptions"],
+            [fn("SUM", col("amount")), "totalAmount"],
+            [fn("SUM", col("bonusAmount")), "totalBonus"],
+          ],
+          group: ["redeemedByUserId"],
+        }),
+        Session.findAll({
+          where: {
+            actorType: "user",
+            lastSeenAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: ["ip"],
+        }),
+        User.findAll({
+          where: {
+            role: "player",
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            [literal(`DATE("createdAt")`), "day"],
+            [fn("COUNT", literal("*")), "count"],
+          ],
+          group: [literal(`DATE("createdAt")`)],
+          order: [[literal(`DATE("createdAt")`), "ASC"]],
+        }),
+        User.findAll({
+          where: {
+            role: "player",
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            [literal(`DATE_TRUNC('hour', "createdAt")`), "hour"],
+            [fn("COUNT", literal("*")), "count"],
+          ],
+          group: [literal(`DATE_TRUNC('hour', "createdAt")`)],
+          order: [[literal(`DATE_TRUNC('hour', "createdAt")`), "ASC"]],
+        }),
+      ]);
+
+      let totalBetAll = 0;
+      let totalWinAll = 0;
+      const betByPlayer = new Map();
+
+      const winRatePlayers = playerAgg.map((row) => {
+        const playerId = row.get("playerId");
+        const rounds = Number(row.get("rounds") || 0);
+        const totalBet = Number(row.get("totalBet") || 0);
+        const totalWin = Number(row.get("totalWin") || 0);
+        totalBetAll += totalBet;
+        totalWinAll += totalWin;
+        betByPlayer.set(String(playerId), totalBet);
+        return { playerId, rounds, totalBet, totalWin };
+      });
+
+      const baselineRtp = totalBetAll > 0 ? totalWinAll / totalBetAll : 0;
+
+      const winRateOutliers = winRatePlayers
+        .filter(
+          (p) => p.totalBet >= WIN_RATE_MIN_BET && p.rounds >= WIN_RATE_MIN_ROUNDS
+        )
+        .map((p) => {
+          const rtp = p.totalBet > 0 ? p.totalWin / p.totalBet : 0;
+          const deviation = rtp - baselineRtp;
+          return {
+            playerId: p.playerId,
+            rounds: p.rounds,
+            totalBet: p.totalBet,
+            totalWin: p.totalWin,
+            rtp,
+            deviation,
+            isOutlier: Math.abs(deviation) >= WIN_RATE_DEVIATION_THRESHOLD,
+          };
+        });
+
+      const bonusAccounts = voucherAgg.map((row) => {
+        const playerId = row.get("playerId");
+        const redemptions = Number(row.get("redemptions") || 0);
+        const totalAmount = Number(row.get("totalAmount") || 0);
+        const totalBonus = Number(row.get("totalBonus") || 0);
+        const bonusRatio = totalAmount > 0 ? totalBonus / totalAmount : 0;
+        const totalBet = betByPlayer.get(String(playerId)) || 0;
+        const bonusToBetRatio = totalBet > 0 ? totalBonus / totalBet : 0;
+        const flagged =
+          totalBonus >= BONUS_MIN_TOTAL &&
+          (bonusRatio >= BONUS_RATIO_THRESHOLD ||
+            bonusToBetRatio >= BONUS_TO_BET_THRESHOLD ||
+            redemptions >= BONUS_REDEMPTION_THRESHOLD);
+        return {
+          playerId,
+          redemptions,
+          totalAmount,
+          totalBonus,
+          bonusRatio,
+          bonusToBetRatio,
+          status: flagged ? "flagged" : "legit",
+        };
+      });
+
+      const bonusSummary = bonusAccounts.reduce(
+        (acc, account) => {
+          if (account.status === "flagged") {
+            acc.flagged.count += 1;
+            acc.flagged.totalBonus += account.totalBonus;
+          } else {
+            acc.legit.count += 1;
+            acc.legit.totalBonus += account.totalBonus;
+          }
+          return acc;
+        },
+        { flagged: { count: 0, totalBonus: 0 }, legit: { count: 0, totalBonus: 0 } }
+      );
+
+      const countryCounts = {};
+      let unknown = 0;
+      for (const session of sessionRows) {
+        const ip = normalizeIp(session.ip);
+        const geo = ip ? geoip.lookup(ip) : null;
+        const country = geo?.country || "Unknown";
+        if (country === "Unknown") unknown += 1;
+        countryCounts[country] = (countryCounts[country] || 0) + 1;
+      }
+
+      const countries = Object.entries(countryCounts)
+        .map(([country, count]) => ({ country, count }))
+        .sort((a, b) => b.count - a.count);
+
+      const dailyMap = {};
+      for (const row of dailyRows) {
+        const day = row.get("day");
+        dailyMap[day] = Number(row.get("count") || 0);
+      }
+      const daily = rangeDays.map((day) => ({
+        day,
+        count: dailyMap[day] || 0,
+      }));
+
+      const hourlyMap = {};
+      for (const row of hourlyRows) {
+        const hourValue = row.get("hour");
+        const hour = hourValue instanceof Date ? hourValue.toISOString() : String(hourValue);
+        hourlyMap[hour] = Number(row.get("count") || 0);
+      }
+      const hourly = hourList.map((hour) => ({
+        hour,
+        count: hourlyMap[hour] || 0,
+      }));
+
+      res.json({
+        ok: true,
+        period: { start, end, label: `${start} → ${end}` },
+        winRateOutliers: {
+          baselineRtp,
+          minBet: WIN_RATE_MIN_BET,
+          minRounds: WIN_RATE_MIN_ROUNDS,
+          deviationThreshold: WIN_RATE_DEVIATION_THRESHOLD,
+          players: winRateOutliers,
+        },
+        bonusAbuse: {
+          ...bonusSummary,
+          criteria: {
+            minBonus: BONUS_MIN_TOTAL,
+            bonusRatioThreshold: BONUS_RATIO_THRESHOLD,
+            bonusToBetThreshold: BONUS_TO_BET_THRESHOLD,
+            redemptionThreshold: BONUS_REDEMPTION_THRESHOLD,
+          },
+          accounts: bonusAccounts,
+        },
+        geography: {
+          countries,
+          unknown,
+          total: sessionRows.length,
+        },
+        accountVelocity: {
+          daily,
+          hourly,
+        },
+      });
+    } catch (err) {
+      console.error("[ADMIN_REPORTS_RISK] error:", err);
+      res.status(500).json({ ok: false, error: "Failed to build risk report" });
     }
   }
 );
