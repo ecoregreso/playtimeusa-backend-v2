@@ -24,8 +24,8 @@ function parseDateOnly(value) {
 }
 
 function buildDateRange(req) {
-  const qsStart = parseDateOnly(req.query.start);
-  const qsEnd = parseDateOnly(req.query.end);
+  const qsStart = parseDateOnly(req.query.start || req.query.from);
+  const qsEnd = parseDateOnly(req.query.end || req.query.to);
 
   let start, end;
 
@@ -56,6 +56,67 @@ function buildDateRange(req) {
   endDateExclusive.setUTCDate(endDateExclusive.getUTCDate() + 1);
 
   return { start, end, startDate, endDateExclusive };
+}
+
+function toDay(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(day, offset) {
+  if (!day) return null;
+  const date = new Date(day + "T00:00:00.000Z");
+  if (Number.isNaN(date.getTime())) return null;
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function buildDayList(startDate, endDateExclusive) {
+  const days = [];
+  const cursor = new Date(startDate);
+  while (cursor < endDateExclusive) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return days;
+}
+
+const SESSION_LENGTH_BINS = [
+  { label: "0-2m", min: 0, max: 2 },
+  { label: "2-5m", min: 2, max: 5 },
+  { label: "5-10m", min: 5, max: 10 },
+  { label: "10-20m", min: 10, max: 20 },
+  { label: "20-40m", min: 20, max: 40 },
+  { label: "40-60m", min: 40, max: 60 },
+  { label: "60-120m", min: 60, max: 120 },
+  { label: "120m+", min: 120, max: Infinity },
+];
+
+const BET_SIZE_BINS = [
+  { label: "0-1", min: 0, max: 1 },
+  { label: "1-5", min: 1, max: 5 },
+  { label: "5-10", min: 5, max: 10 },
+  { label: "10-25", min: 10, max: 25 },
+  { label: "25-50", min: 25, max: 50 },
+  { label: "50-100", min: 50, max: 100 },
+  { label: "100-250", min: 100, max: 250 },
+  { label: "250+", min: 250, max: Infinity },
+];
+
+function buildHistogram(values, bins) {
+  const counts = bins.map((bin) => ({ name: bin.label, value: 0 }));
+  for (const value of values) {
+    for (let i = 0; i < bins.length; i += 1) {
+      const bin = bins[i];
+      if (value >= bin.min && value < bin.max) {
+        counts[i].value += 1;
+        break;
+      }
+    }
+  }
+  return counts;
 }
 
 // GET /admin/reports/range?start=YYYY-MM-DD&end=YYYY-MM-DD
@@ -475,7 +536,175 @@ router.get(
   }
 );
 
-// Optional: daily rollup endpoint (not used by your current UI yet)
+// GET /admin/reports/behavior?start=YYYY-MM-DD&end=YYYY-MM-DD
+router.get(
+  "/behavior",
+  requireStaffAuth([PERMISSIONS.FINANCE_READ]),
+  async (req, res) => {
+    let range;
+    try {
+      range = buildDateRange(req);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    const { start, end, startDate, endDateExclusive } = range;
+    const rangeDays = buildDayList(startDate, endDateExclusive);
+
+    const activityStart = new Date(startDate);
+    activityStart.setUTCDate(activityStart.getUTCDate() - 29);
+    const activityEnd = new Date(endDateExclusive);
+    activityEnd.setUTCDate(activityEnd.getUTCDate() + 30);
+    const activityDays = buildDayList(activityStart, activityEnd);
+    const activityIndexByDay = Object.fromEntries(
+      activityDays.map((day, idx) => [day, idx])
+    );
+
+    try {
+      const [players, sessionsActivity, sessionsForLength, betTx] = await Promise.all([
+        User.findAll({
+          where: {
+            role: "player",
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: ["id", "createdAt"],
+        }),
+        Session.findAll({
+          where: {
+            actorType: "user",
+            lastSeenAt: {
+              [Op.gte]: activityStart,
+              [Op.lt]: activityEnd,
+            },
+          },
+          attributes: ["userId", "createdAt", "lastSeenAt"],
+        }),
+        Session.findAll({
+          where: {
+            actorType: "user",
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: ["createdAt", "lastSeenAt"],
+        }),
+        Transaction.findAll({
+          where: {
+            type: "game_bet",
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: ["amount"],
+        }),
+      ]);
+
+      const sessionDaySets = Object.fromEntries(
+        activityDays.map((day) => [day, new Set()])
+      );
+
+      for (const session of sessionsActivity) {
+        const day = toDay(session.lastSeenAt || session.createdAt);
+        if (!day || !sessionDaySets[day]) continue;
+        const userId = session.userId;
+        if (userId != null) {
+          sessionDaySets[day].add(String(userId));
+        }
+      }
+
+      const activeDays = rangeDays.map((day) => {
+        const index = activityIndexByDay[day];
+        const dau = sessionDaySets[day]?.size || 0;
+        const wauSet = new Set();
+        const mauSet = new Set();
+        if (index != null) {
+          const startWau = Math.max(0, index - 6);
+          const startMau = Math.max(0, index - 29);
+          for (let i = startWau; i <= index; i += 1) {
+            sessionDaySets[activityDays[i]]?.forEach((id) => wauSet.add(id));
+          }
+          for (let i = startMau; i <= index; i += 1) {
+            sessionDaySets[activityDays[i]]?.forEach((id) => mauSet.add(id));
+          }
+        }
+        return {
+          day,
+          dau,
+          wau: wauSet.size,
+          mau: mauSet.size,
+        };
+      });
+
+      const cohorts = {};
+      for (const player of players) {
+        const day = toDay(player.createdAt);
+        if (!day) continue;
+        if (!cohorts[day]) cohorts[day] = new Set();
+        cohorts[day].add(String(player.id));
+      }
+
+      const retentionForOffset = (day, cohort, offset) => {
+        const targetDay = addDays(day, offset);
+        const activeSet = targetDay ? sessionDaySets[targetDay] : null;
+        if (!activeSet || !cohort.size) return null;
+        let retained = 0;
+        cohort.forEach((id) => {
+          if (activeSet.has(id)) retained += 1;
+        });
+        return (retained / cohort.size) * 100;
+      };
+
+      const retentionDays = rangeDays.map((day) => {
+        const cohort = cohorts[day];
+        if (!cohort || !cohort.size) {
+          return { day, d1: null, d7: null, d30: null, cohort: 0 };
+        }
+        return {
+          day,
+          d1: retentionForOffset(day, cohort, 1),
+          d7: retentionForOffset(day, cohort, 7),
+          d30: retentionForOffset(day, cohort, 30),
+          cohort: cohort.size,
+        };
+      });
+
+      const sessionLengths = [];
+      for (const session of sessionsForLength) {
+        const createdAt = new Date(session.createdAt);
+        const lastSeen = new Date(session.lastSeenAt || session.createdAt);
+        if (Number.isNaN(createdAt.getTime()) || Number.isNaN(lastSeen.getTime())) {
+          continue;
+        }
+        const durationMinutes = Math.max(0, (lastSeen - createdAt) / 60000);
+        sessionLengths.push(durationMinutes);
+      }
+
+      const betValues = betTx
+        .map((tx) => Math.abs(Number(tx.amount || 0)))
+        .filter((value) => Number.isFinite(value));
+
+      res.json({
+        ok: true,
+        period: { start, end, label: `${start} → ${end}` },
+        activeUsers: { days: activeDays },
+        retention: { cohorts: retentionDays },
+        distributions: {
+          sessionLengths: buildHistogram(sessionLengths, SESSION_LENGTH_BINS),
+          betSizes: buildHistogram(betValues, BET_SIZE_BINS),
+        },
+      });
+    } catch (err) {
+      console.error("[ADMIN_REPORTS_BEHAVIOR] error:", err);
+      res.status(500).json({ ok: false, error: "Failed to build behavior report" });
+    }
+  }
+);
+
 // GET /admin/reports/daily?start=YYYY-MM-DD&end=YYYY-MM-DD
 router.get(
   "/daily",
@@ -491,14 +720,22 @@ router.get(
     const { start, end, startDate, endDateExclusive } = range;
 
     try {
-      // Example: daily net game from transactions (game_bet - game_win)
+      const depositTypes = ["credit", "voucher_credit", "manual_adjustment"];
+      const withdrawalTypes = ["debit", "voucher_debit", "manual_debit"];
+      const queryTypes = [
+        ...depositTypes,
+        ...withdrawalTypes,
+        "game_bet",
+        "game_win",
+      ];
+
       const rows = await Transaction.findAll({
         where: {
           createdAt: {
             [Op.gte]: startDate,
             [Op.lt]: endDateExclusive,
           },
-          type: { [Op.in]: ["game_bet", "game_win"] },
+          type: { [Op.in]: queryTypes },
         },
         attributes: [
           [literal(`DATE("createdAt")`), "day"],
@@ -509,37 +746,44 @@ router.get(
         order: [[literal(`DATE("createdAt")`), "ASC"]],
       });
 
-      const byDay = {};
+      const dayList = buildDayList(startDate, endDateExclusive);
+      const byDay = Object.fromEntries(
+        dayList.map((day) => [
+          day,
+          { day, deposits: 0, withdrawals: 0, gameBet: 0, gameWin: 0 },
+        ])
+      );
 
       for (const r of rows) {
         const day = r.get("day");
         const type = r.type;
         const amt = Number(r.get("totalAmount") || 0);
+        const entry = byDay[day];
+        if (!entry) continue;
 
-        if (!byDay[day]) {
-          byDay[day] = {
-            date: day,
-            gameBet: 0,
-            gameWin: 0,
-          };
-        }
-
-        if (type === "game_bet") byDay[day].gameBet += amt;
-        if (type === "game_win") byDay[day].gameWin += amt;
+        if (depositTypes.includes(type)) entry.deposits += amt;
+        if (withdrawalTypes.includes(type)) entry.withdrawals += amt;
+        if (type === "game_bet") entry.gameBet += amt;
+        if (type === "game_win") entry.gameWin += amt;
       }
 
-      const days = Object.values(byDay).map((d) => ({
-        ...d,
-        netGame: d.gameBet - d.gameWin,
-      }));
+      const days = dayList.map((day) => {
+        const entry = byDay[day];
+        return {
+          ...entry,
+          netGame: entry.gameBet - entry.gameWin,
+          netCashflow: entry.deposits - entry.withdrawals,
+        };
+      });
 
       res.json({
+        ok: true,
         period: { start, end },
         days,
       });
     } catch (err) {
       console.error("[ADMIN_REPORTS_DAILY] error:", err);
-      res.status(500).json({ error: "Failed to build daily report" });
+      res.status(500).json({ ok: false, error: "Failed to build daily report" });
     }
   }
 );
