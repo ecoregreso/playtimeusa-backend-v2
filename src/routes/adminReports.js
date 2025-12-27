@@ -1430,13 +1430,14 @@ router.get(
     const { start, end, startDate, endDateExclusive } = range;
 
     try {
-      const depositTypes = ["credit", "voucher_credit", "manual_adjustment"];
-      const withdrawalTypes = ["debit", "voucher_debit", "manual_debit"];
+      const depositTypes = ["credit", "voucher_credit"];
+      const withdrawalTypes = ["debit", "voucher_debit"];
       const queryTypes = [
         ...depositTypes,
         ...withdrawalTypes,
         "game_bet",
         "game_win",
+        "manual_adjustment",
       ];
 
       const rows = await Transaction.findAll({
@@ -1473,8 +1474,12 @@ router.get(
 
         if (depositTypes.includes(type)) entry.deposits += amt;
         if (withdrawalTypes.includes(type)) entry.withdrawals += amt;
-        if (type === "game_bet") entry.gameBet += amt;
-        if (type === "game_win") entry.gameWin += amt;
+        if (type === "manual_adjustment") {
+          if (amt >= 0) entry.deposits += amt;
+          else entry.withdrawals += Math.abs(amt);
+        }
+        if (type === "game_bet") entry.gameBet += Math.abs(amt);
+        if (type === "game_win") entry.gameWin += Math.abs(amt);
       }
 
       const days = dayList.map((day) => {
