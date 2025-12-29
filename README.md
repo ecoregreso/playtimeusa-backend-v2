@@ -17,7 +17,7 @@ This is a clean Postgres/Sequelize backend skeleton for the Playtime USA funcoin
 - **Players**: Ephemeral accounts (loginCode + pin) created when vouchers are redeemed
 - **Bonuses**: Trigger when player balance reaches 1.00 FUN (100 minor units)
 - **Bets**: Simple RNG demo endpoint
-- **Ledger Entries**: Trace of all money movements
+- **Ledger Events**: Canonical telemetry stream (bets, wins, deposits, vouchers, errors)
 
 ## Endpoints (v1)
 
@@ -61,23 +61,24 @@ Metric definitions:
 - **LTV (operator)**: bets - wins
 
 Data sources:
-- `ledger_events` is the normalized event stream used by analytics
+- `ledger_events` is the normalized event stream used by analytics and safety
 - `session_snapshots` is derived from ledger events for session-based metrics
-- `api_error_events` tracks API error rates
 - `game_configs` stores expected RTP per game
 
 To add a new game to analytics:
 1) Emit ledger events with `gameKey` on every bet/spin/win.
-2) Add or update `game_configs` with the expected RTP.
+2) Include a stable `actionId` (spin/round id) so events are idempotent.
+3) Add or update `game_configs` with the expected RTP.
 
 ## Player Safety Engine (PSE)
 
-PSE is a telemetry + risk scoring layer that does **not** affect game outcomes. Games should post
-session telemetry after each spin and optionally set a loss limit at session start.
+PSE is a telemetry + risk scoring layer that does **not** affect game outcomes. Safety scoring
+reads session activity from `ledger_events`; games may optionally call `/safety/event` for
+advisory UI actions and set a loss limit at session start.
 
 Player routes:
 - `POST /api/v1/safety/loss-limit` — set a session loss limit
-- `POST /api/v1/safety/event` — send per-spin telemetry and receive any safety action
+- `POST /api/v1/safety/event` — request advisory safety action (no ledger writes)
 
 Example: set loss limit (once per session; can be lowered, never increased):
 ```
@@ -92,19 +93,14 @@ Example response:
 { "ok": true, "lossLimitCents": 5000, "locked": true }
 ```
 
-Example: send a spin telemetry event:
+Example: request advisory safety action:
 ```
 POST /api/v1/safety/event
 Headers: Authorization: Bearer <player_access_token>
 Headers: x-session-id: <session_id>
 Body: {
   "gameKey": "neon-slot",
-  "eventType": "SPIN",
-  "betCents": 200,
-  "winCents": 0,
-  "balanceCents": 3200,
-  "clientTs": "2025-12-26T18:45:10.000Z",
-  "meta": { "spinMs": 980 }
+  "eventType": "SPIN"
 }
 ```
 
@@ -128,7 +124,7 @@ Example responses:
 ```
 
 ```
-// Loss limit reached
+// Loss limit reached (enforced at bet/settlement)
 {
   "ok": false,
   "code": "LOSS_LIMIT_REACHED",
@@ -136,3 +132,30 @@ Example responses:
   "action": { "actionType": "STOP" }
 }
 ```
+
+## Ledger Deduplication (one-time cleanup)
+
+Run in order:
+```
+node scripts/dedupe_ledger_events.js
+node scripts/rebuild_session_snapshots.js
+```
+
+## Tenant Isolation
+
+Tenant isolation is enforced with Postgres RLS policies. See `docs/tenant-isolation.md` for
+the table list, context rules, and test instructions.
+
+## Scripts
+
+- `npm run migrate` — apply SQL migrations
+- `npm run test:rls` — run the tenant isolation integration test
+- `npm run smoke` — run a minimal sanity check
+
+## Changelog
+
+- Enforced tenant isolation using `tenant_id` + RLS (owner override policy).
+- Added tenant/distributor tables, tenant wallets, voucher pools, and credit ledger.
+- Added migration runner + RLS integration test harness.
+- Allowed owner staff accounts with `tenant_id` = NULL and owner login without tenant scoping.
+- Dropped global ledger event uniqueness and extended RLS to legacy telemetry tables when present.

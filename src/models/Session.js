@@ -9,6 +9,11 @@ const Session = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    tenantId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
+    },
     actorType: {
       type: DataTypes.STRING(16),
       allowNull: false,
@@ -42,6 +47,7 @@ const Session = sequelize.define(
   {
     tableName: "sessions",
     timestamps: true,
+    indexes: [{ fields: ["tenantId"] }],
   }
 );
 

@@ -9,6 +9,11 @@ const DepositIntent = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    tenantId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
+    },
     actorType: {
       type: DataTypes.STRING,
       allowNull: false,
@@ -94,6 +99,7 @@ const DepositIntent = sequelize.define(
   {
     tableName: "deposit_intents",
     timestamps: true,
+    indexes: [{ fields: ["tenantId"] }],
   }
 );
 

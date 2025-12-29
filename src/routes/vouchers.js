@@ -1,11 +1,13 @@
 // src/routes/vouchers.js
 const express = require("express");
 const { Op } = require("sequelize");
+const { sequelize } = require("../db");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { staffAuth } = require("../middleware/staffAuth");
-const { Voucher, Wallet, Transaction, User } = require("../models");
+const { Voucher, Wallet, Transaction, User, TenantVoucherPool } = require("../models");
 const { generateVoucherQrPng } = require("../utils/qr");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
+const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 
 const router = express.Router();
 
@@ -27,16 +29,19 @@ function randomNumeric(length) {
   return out;
 }
 
-async function getOrCreateWallet(userId, currency = "FUN") {
+async function getOrCreateWallet(userId, tenantId, currency = "FUN") {
   let wallet = await Wallet.findOne({
-    where: { userId, currency },
+    where: { userId, tenantId, currency },
   });
 
   if (!wallet) {
     wallet = await Wallet.create({
       userId,
+      tenantId,
       currency,
       balance: 0,
+      bonusPending: 0,
+      bonusUnacked: 0,
     });
   }
 
@@ -96,26 +101,53 @@ router.post(
       const userCode = code; // mirrors code; not stored separately
       const totalCredit = valueAmount + valueBonus;
 
-      // Retry a few times to avoid rare collision on the unique constraint
+      const t = await sequelize.transaction({ transaction: req.transaction });
       let voucher;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          voucher = await Voucher.create({
-            code: attempt === 0 ? code : randomNumeric(6),
-            pin,
-            amount: valueAmount,
-            bonusAmount: valueBonus,
-            totalCredit,
-            status: "new",
-            createdBy: req.staff?.id || null,
-          });
-          break;
-        } catch (err) {
-          if (err.name === "SequelizeUniqueConstraintError" && attempt < 4) {
-            continue;
-          }
-          throw err;
+      try {
+        const tenantId = req.staff?.tenantId || null;
+        const pool = await TenantVoucherPool.findOne({
+          where: { tenantId },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+
+        if (!pool || Number(pool.poolBalanceCents || 0) < toCents(totalCredit)) {
+          await t.rollback();
+          return res.status(400).json({ error: "Insufficient voucher pool balance" });
         }
+
+        pool.poolBalanceCents = Number(pool.poolBalanceCents || 0) - toCents(totalCredit);
+        await pool.save({ transaction: t });
+
+        // Retry a few times to avoid rare collision on the unique constraint
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            voucher = await Voucher.create(
+              {
+                tenantId,
+                code: attempt === 0 ? code : randomNumeric(6),
+                pin,
+                amount: valueAmount,
+                bonusAmount: valueBonus,
+                totalCredit,
+                status: "new",
+                createdBy: req.staff?.id || null,
+              },
+              { transaction: t }
+            );
+            break;
+          } catch (err) {
+            if (err.name === "SequelizeUniqueConstraintError" && attempt < 4) {
+              continue;
+            }
+            throw err;
+          }
+        }
+
+        await t.commit();
+      } catch (err) {
+        await t.rollback();
+        throw err;
       }
 
       let qrPath = null;
@@ -143,9 +175,11 @@ router.post(
       await recordLedgerEvent({
         ts: new Date(),
         eventType: "VOUCHER_ISSUED",
+        actionId: voucher.id,
         agentId: req.staff?.role === "cashier" ? null : req.staff?.id || null,
         cashierId: req.staff?.role === "cashier" ? req.staff?.id || null : null,
         amountCents: toCents(valueAmount + valueBonus),
+        source: "vouchers.issue",
         meta: {
           ...staffMeta,
           voucherId: voucher.id,
@@ -200,27 +234,29 @@ router.post(
       const userId = req.user.id;
       const currency = voucher.currency || "FUN";
 
-      const wallet = await getOrCreateWallet(userId, currency);
+      const wallet = await getOrCreateWallet(userId, req.auth?.tenantId || null, currency);
 
       const before = Number(wallet.balance || 0);
       const amount = Number(voucher.amount || 0);
       const bonus = Number(voucher.bonusAmount || 0);
       const totalCredit = amount + bonus;
 
-      wallet.balance = before + totalCredit;
+      wallet.balance = before + amount;
+      wallet.bonusPending = Number(wallet.bonusPending || 0) + bonus;
       await wallet.save();
 
       const tx = await Transaction.create({
+        tenantId: req.auth?.tenantId || null,
         walletId: wallet.id,
         type: "voucher_credit",
-        amount: totalCredit,
+        amount,
         balanceBefore: before,
         balanceAfter: wallet.balance,
         reference: `voucher:${voucher.code}`,
         metadata: {
           voucherId: voucher.id,
           amount,
-          bonus,
+          bonusPending: bonus,
         },
         createdByUserId: userId,
       });
@@ -230,13 +266,24 @@ router.post(
       voucher.redeemedByUserId = userId;
       await voucher.save();
 
+      await applyPendingBonusIfEligible({
+        wallet,
+        transaction: null,
+        reference: `bonus:${voucher.code}`,
+        metadata: { voucherId: voucher.id },
+      });
+
+      const bonusState = buildBonusState(wallet);
+
       const sessionId = req.headers["x-session-id"] || null;
       await recordLedgerEvent({
         ts: new Date(),
         playerId: userId,
         sessionId: sessionId ? String(sessionId) : null,
         eventType: "VOUCHER_REDEEMED",
+        actionId: voucher.id,
         amountCents: toCents(totalCredit),
+        source: "vouchers.redeem",
         meta: {
           ...buildRequestMeta(req),
           voucherId: voucher.id,
@@ -250,6 +297,7 @@ router.post(
         voucher,
         wallet,
         transaction: tx,
+        bonus: bonusState,
       });
     } catch (err) {
       console.error("[VOUCHERS] POST /redeem error:", err);

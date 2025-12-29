@@ -8,16 +8,19 @@ const User = sequelize.define('User', {
     defaultValue: DataTypes.UUIDV4,
     primaryKey: true,
   },
+  tenantId: {
+    type: DataTypes.UUID,
+    allowNull: false,
+    field: "tenant_id",
+  },
   email: {
     type: DataTypes.STRING(255),
     allowNull: false,
-    unique: true,
     validate: { isEmail: true },
   },
   username: {
     type: DataTypes.STRING(64),
     allowNull: false,
-    unique: true,
   },
   passwordHash: {
     type: DataTypes.STRING(255),
@@ -37,8 +40,9 @@ const User = sequelize.define('User', {
   tableName: 'users',
   timestamps: true,
   indexes: [
-    { fields: ['email'], unique: true },
-    { fields: ['username'], unique: true },
+    { fields: ["tenantId"] },
+    { fields: ["tenantId", "email"], unique: true },
+    { fields: ["tenantId", "username"], unique: true },
     { fields: ['role'] },
   ],
 });
@@ -47,10 +51,16 @@ User.prototype.checkPassword = async function (plain) {
   return bcrypt.compare(plain, this.passwordHash);
 };
 
-User.createWithPassword = async function ({ email, username, password, role = 'player' }) {
+User.createWithPassword = async function ({
+  email,
+  username,
+  password,
+  tenantId,
+  role = "player",
+}) {
   const saltRounds = 10;
   const passwordHash = await bcrypt.hash(password, saltRounds);
-  return User.create({ email, username, passwordHash, role });
+  return User.create({ email, username, passwordHash, role, tenantId });
 };
 
 module.exports = User;

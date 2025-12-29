@@ -38,6 +38,7 @@ router.post(
 
       if (!existing) {
         const created = await PlayerSafetyLimit.create({
+          tenantId: req.auth?.tenantId || null,
           playerId,
           sessionId,
           lossLimitCents: Math.floor(lossLimitCents),
@@ -89,43 +90,6 @@ router.post(
       const payload = req.body || {};
       const ctx = { playerId, sessionId };
 
-      await safetyEngine.recordTelemetryEvent(ctx, payload);
-
-      const betCents = Number(payload.betCents || 0);
-      const winCents = Number(payload.winCents || 0);
-      const proposedLoss = Math.max(0, betCents - winCents);
-
-      try {
-        await safetyEngine.enforceLossLimit(ctx, proposedLoss);
-      } catch (err) {
-        if (err?.code === "LOSS_LIMIT_REACHED") {
-          await PlayerSafetyAction.create({
-            playerId,
-            sessionId,
-            gameKey: payload.gameKey || null,
-            actionType: "STOP",
-            reasonCodes: ["LOSS_LIMIT_HIT"],
-            severity: 5,
-            details: {
-              score: 100,
-              band: "STOP",
-              evidence: {
-                lossLimitCents: err.lossLimitCents,
-                currentLossCents: err.currentLossCents,
-                projectedLossCents: err.projectedLossCents,
-              },
-            },
-          });
-          return res.status(403).json({
-            ok: false,
-            code: "LOSS_LIMIT_REACHED",
-            message: "Loss limit reached for this session.",
-            action: { actionType: "STOP", message: safetyEngine.ACTION_MESSAGES.STOP },
-          });
-        }
-        throw err;
-      }
-
       const risk = await safetyEngine.computeRisk(ctx, {});
       const action = await safetyEngine.maybeIssueAction(ctx, risk);
 
@@ -140,6 +104,7 @@ router.post(
             ? 4
             : 2;
         await PlayerSafetyAction.create({
+          tenantId: req.auth?.tenantId || null,
           playerId,
           sessionId,
           gameKey: payload.gameKey || null,

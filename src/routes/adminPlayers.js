@@ -11,10 +11,10 @@ const { PERMISSIONS } = require("../constants/permissions");
 
 const router = express.Router();
 
-async function getOrCreateWallet(userId) {
-  let wallet = await Wallet.findOne({ where: { userId } });
+async function getOrCreateWallet(userId, tenantId) {
+  let wallet = await Wallet.findOne({ where: { userId, tenantId } });
   if (!wallet) {
-    wallet = await Wallet.create({ userId, balance: 0 });
+    wallet = await Wallet.create({ userId, tenantId, balance: 0 });
   }
   return wallet;
 }
@@ -121,13 +121,14 @@ router.post(
         return res.status(404).json({ ok: false, error: "Player not found" });
       }
 
-      const wallet = await getOrCreateWallet(player.id);
+      const wallet = await getOrCreateWallet(player.id, req.staff?.tenantId || null);
       const before = Number(wallet.balance || 0);
       const after = before + amount;
       wallet.balance = after;
       await wallet.save();
 
       await Transaction.create({
+        tenantId: req.staff?.tenantId || null,
         walletId: wallet.id,
         type: "manual_adjustment",
         amount,

@@ -1,7 +1,6 @@
-const { Op, QueryTypes } = require("sequelize");
+const { QueryTypes } = require("sequelize");
 const {
   sequelize,
-  SafetyTelemetryEvent,
   PlayerSafetyLimit,
   PlayerSafetyAction,
 } = require("../models");
@@ -42,52 +41,54 @@ class LossLimitError extends Error {
   }
 }
 
-function normalizeEventType(value) {
-  if (!value) return "SPIN";
-  return String(value).trim().toUpperCase();
-}
-
-function parseClientTs(value) {
-  if (!value) return null;
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return parsed;
-}
-
-function toCents(value) {
-  if (value == null || value === "") return null;
-  const number = Number(value);
-  if (!Number.isFinite(number)) return null;
-  return Math.round(number);
-}
-
-async function recordTelemetryEvent(ctx, payload = {}) {
-  if (!ctx?.sessionId) return null;
-  const eventType = normalizeEventType(payload.eventType);
-  const event = await SafetyTelemetryEvent.create({
-    playerId: ctx.playerId || null,
-    sessionId: String(ctx.sessionId),
-    gameKey: payload.gameKey ? String(payload.gameKey) : null,
-    eventType,
-    betCents: toCents(payload.betCents),
-    winCents: toCents(payload.winCents),
-    balanceCents: toCents(payload.balanceCents),
-    clientTs: parseClientTs(payload.clientTs),
-    meta: payload.meta || null,
-  });
-  return event;
-}
-
 async function fetchRecentSpins(sessionId) {
-  const rows = await SafetyTelemetryEvent.findAll({
-    where: {
-      sessionId: String(sessionId),
-      eventType: "SPIN",
-    },
-    order: [["createdAt", "DESC"]],
-    limit: MAX_SPINS,
-  });
-  return rows.map((row) => row.toJSON());
+  const rows = await sequelize.query(
+    `
+      WITH spins AS (
+        SELECT "actionId", "gameKey", "ts", "createdAt",
+               COALESCE("betCents", 0) AS "betCents",
+               "balanceCents"
+        FROM ledger_events
+        WHERE "sessionId" = :sessionId
+          AND "eventType" = 'SPIN'
+        ORDER BY "ts" DESC
+        LIMIT :limit
+      ),
+      wins AS (
+        SELECT "actionId", SUM(COALESCE("winCents", 0)) AS "winCents"
+        FROM ledger_events
+        WHERE "sessionId" = :sessionId
+          AND "eventType" = 'WIN'
+          AND "actionId" IS NOT NULL
+        GROUP BY "actionId"
+      ),
+      bets AS (
+        SELECT "actionId", SUM(COALESCE("betCents", 0)) AS "betCents"
+        FROM ledger_events
+        WHERE "sessionId" = :sessionId
+          AND "eventType" = 'BET'
+          AND "actionId" IS NOT NULL
+        GROUP BY "actionId"
+      )
+      SELECT s.*,
+             COALESCE(w."winCents", 0) AS "winCents",
+             COALESCE(s."betCents", b."betCents", 0) AS "resolvedBetCents"
+      FROM spins s
+      LEFT JOIN wins w ON w."actionId" = s."actionId"
+      LEFT JOIN bets b ON b."actionId" = s."actionId"
+      ORDER BY s."ts" DESC
+    `,
+    {
+      replacements: { sessionId: String(sessionId), limit: MAX_SPINS },
+      type: QueryTypes.SELECT,
+    }
+  );
+
+  return rows.map((row) => ({
+    ...row,
+    betCents: Number(row.resolvedBetCents || row.betCents || 0),
+    winCents: Number(row.winCents || 0),
+  }));
 }
 
 function median(values) {
@@ -129,11 +130,11 @@ async function computeRisk(ctx, opts = {}) {
     score += SIGNALS.BET_ACCEL.score;
   }
 
-  const clientTimes = recentSpins
-    .map((row) => (row.clientTs ? new Date(row.clientTs).getTime() : null))
+  const eventTimes = recentSpins
+    .map((row) => (row.ts ? new Date(row.ts).getTime() : new Date(row.createdAt).getTime()))
     .filter((value) => Number.isFinite(value));
-  if (clientTimes.length >= 6) {
-    const sorted = clientTimes.slice().sort((a, b) => a - b);
+  if (eventTimes.length >= 6) {
+    const sorted = eventTimes.slice().sort((a, b) => a - b);
     const deltas = [];
     for (let i = 1; i < sorted.length; i += 1) {
       const delta = sorted[i] - sorted[i - 1];
@@ -149,7 +150,7 @@ async function computeRisk(ctx, opts = {}) {
 
   const recentWindowStart = new Date(now - GAME_HOP_WINDOW_MS);
   const recentWindowSpins = spins.filter(
-    (row) => new Date(row.createdAt) >= recentWindowStart
+    (row) => new Date(row.ts || row.createdAt) >= recentWindowStart
   );
   const distinctGames = new Set(
     recentWindowSpins.map((row) => row.gameKey).filter(Boolean)
@@ -174,7 +175,7 @@ async function computeRisk(ctx, opts = {}) {
 
   const lossWindowStart = new Date(now - LOSS_CLUSTER_WINDOW_MS);
   const lossWindowSpins = spins.filter(
-    (row) => new Date(row.createdAt) >= lossWindowStart
+    (row) => new Date(row.ts || row.createdAt) >= lossWindowStart
   );
   const totalBet = lossWindowSpins.reduce(
     (sum, row) => sum + Number(row.betCents || 0),
@@ -187,16 +188,29 @@ async function computeRisk(ctx, opts = {}) {
   const loss5mCents = Math.max(0, totalBet - totalWin);
   evidence.loss5mCents = loss5mCents;
 
-  const sessionStartRow = await SafetyTelemetryEvent.findOne({
-    where: {
-      sessionId: String(ctx.sessionId),
-      balanceCents: { [Op.not]: null },
-    },
-    order: [["createdAt", "ASC"]],
-  });
-  const sessionStartBalanceCents = sessionStartRow
+  const [sessionStartRow] = await sequelize.query(
+    `
+      SELECT "balanceCents", "betCents", "winCents", "eventType"
+      FROM ledger_events
+      WHERE "sessionId" = :sessionId
+        AND "balanceCents" IS NOT NULL
+      ORDER BY "ts" ASC
+      LIMIT 1
+    `,
+    {
+      replacements: { sessionId: String(ctx.sessionId) },
+      type: QueryTypes.SELECT,
+    }
+  );
+
+  let sessionStartBalanceCents = sessionStartRow
     ? Number(sessionStartRow.balanceCents || 0)
     : null;
+  if (sessionStartRow?.eventType === "BET") {
+    sessionStartBalanceCents += Number(sessionStartRow.betCents || 0);
+  } else if (sessionStartRow?.eventType === "WIN") {
+    sessionStartBalanceCents -= Number(sessionStartRow.winCents || 0);
+  }
   evidence.sessionStartBalanceCents = sessionStartBalanceCents;
   if (sessionStartBalanceCents != null) {
     const thresholdCents = Math.max(
@@ -272,17 +286,20 @@ async function enforceLossLimit(ctx, proposedAdditionalLossCents) {
   const proposed = Math.max(0, Number(proposedAdditionalLossCents || 0));
   const rows = await sequelize.query(
     `
-      SELECT COALESCE(SUM(GREATEST(COALESCE("betCents", 0) - COALESCE("winCents", 0), 0)), 0) AS "lossCents"
-      FROM safety_telemetry_events
+      SELECT
+        COALESCE(SUM(CASE WHEN "eventType" = 'BET' THEN COALESCE("betCents", 0) ELSE 0 END), 0) AS "betsCents",
+        COALESCE(SUM(CASE WHEN "eventType" = 'WIN' THEN COALESCE("winCents", 0) ELSE 0 END), 0) AS "winsCents"
+      FROM ledger_events
       WHERE "sessionId" = :sessionId
-        AND "eventType" = 'SPIN'
     `,
     {
       replacements: { sessionId: String(ctx.sessionId) },
       type: QueryTypes.SELECT,
     }
   );
-  const currentLoss = Number(rows[0]?.lossCents || 0);
+  const betsCents = Number(rows[0]?.betsCents || 0);
+  const winsCents = Number(rows[0]?.winsCents || 0);
+  const currentLoss = Math.max(0, betsCents - winsCents);
   const projectedLoss = currentLoss + proposed;
   if (projectedLoss >= Number(limit.lossLimitCents || 0)) {
     throw new LossLimitError({
@@ -294,7 +311,6 @@ async function enforceLossLimit(ctx, proposedAdditionalLossCents) {
 }
 
 module.exports = {
-  recordTelemetryEvent,
   computeRisk,
   maybeIssueAction,
   enforceLossLimit,

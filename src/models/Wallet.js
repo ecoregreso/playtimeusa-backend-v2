@@ -8,7 +8,22 @@ const Wallet = sequelize.define('Wallet', {
     defaultValue: DataTypes.UUIDV4,
     primaryKey: true,
   },
+  tenantId: {
+    type: DataTypes.UUID,
+    allowNull: false,
+    field: "tenant_id",
+  },
   balance: {
+    type: DataTypes.DECIMAL(18, 4),
+    allowNull: false,
+    defaultValue: 0,
+  },
+  bonusPending: {
+    type: DataTypes.DECIMAL(18, 4),
+    allowNull: false,
+    defaultValue: 0,
+  },
+  bonusUnacked: {
     type: DataTypes.DECIMAL(18, 4),
     allowNull: false,
     defaultValue: 0,
@@ -21,6 +36,7 @@ const Wallet = sequelize.define('Wallet', {
 }, {
   tableName: 'wallets',
   timestamps: true,
+  indexes: [{ fields: ["tenantId"] }],
 });
 
 User.hasOne(Wallet, {

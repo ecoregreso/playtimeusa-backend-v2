@@ -14,9 +14,9 @@ const StaffPushDevice = sequelize.define(
       allowNull: false,
     },
     tenantId: {
-      type: DataTypes.STRING(64),
-      allowNull: true,
-      defaultValue: "default",
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
     },
     deviceType: {
       type: DataTypes.ENUM("web", "fcm", "apns"),

@@ -5,10 +5,16 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
-async function getOrCreateWallet(userId, t) {
-  let wallet = await Wallet.findOne({ where: { userId }, transaction: t });
+async function getOrCreateWallet(userId, tenantId, t) {
+  let wallet = await Wallet.findOne({
+    where: { userId, tenantId },
+    transaction: t,
+  });
   if (!wallet) {
-    wallet = await Wallet.create({ userId, balance: 0 }, { transaction: t });
+    wallet = await Wallet.create(
+      { userId, tenantId, balance: 0 },
+      { transaction: t }
+    );
   }
   return wallet;
 }
@@ -49,7 +55,7 @@ router.post('/:userId/credit',
   requireAuth,
   requireRole('admin', 'agent', 'cashier'),
   async (req, res) => {
-    const t = await sequelize.transaction();
+    const t = await sequelize.transaction({ transaction: req.transaction });
     try {
       const { userId } = req.params;
       const { amount, type = 'credit', reference, metadata } = req.body;
@@ -66,7 +72,7 @@ router.post('/:userId/credit',
         return res.status(404).json({ error: 'User not found' });
       }
 
-      const wallet = await getOrCreateWallet(userId, t);
+      const wallet = await getOrCreateWallet(userId, req.auth?.tenantId || null, t);
 
       const balanceBefore = parseFloat(wallet.balance);
       const balanceAfter = balanceBefore + numericAmount;
@@ -75,6 +81,7 @@ router.post('/:userId/credit',
       await wallet.save({ transaction: t });
 
       const tx = await Transaction.create({
+        tenantId: req.auth?.tenantId || null,
         walletId: wallet.id,
         type,
         amount: numericAmount,
@@ -103,7 +110,7 @@ router.post('/:userId/debit',
   requireAuth,
   requireRole('admin', 'agent', 'cashier'),
   async (req, res) => {
-    const t = await sequelize.transaction();
+    const t = await sequelize.transaction({ transaction: req.transaction });
     try {
       const { userId } = req.params;
       const { amount, type = 'debit', reference, metadata } = req.body;
@@ -120,7 +127,7 @@ router.post('/:userId/debit',
         return res.status(404).json({ error: 'User not found' });
       }
 
-      const wallet = await getOrCreateWallet(userId, t);
+      const wallet = await getOrCreateWallet(userId, req.auth?.tenantId || null, t);
 
       const balanceBefore = parseFloat(wallet.balance);
       if (balanceBefore < numericAmount) {
@@ -134,6 +141,7 @@ router.post('/:userId/debit',
       await wallet.save({ transaction: t });
 
       const tx = await Transaction.create({
+        tenantId: req.auth?.tenantId || null,
         walletId: wallet.id,
         type,
         amount: numericAmount,

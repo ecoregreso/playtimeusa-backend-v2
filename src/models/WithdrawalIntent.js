@@ -9,6 +9,11 @@ const WithdrawalIntent = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    tenantId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
+    },
     actorType: {
       type: DataTypes.STRING,
       allowNull: false,
@@ -77,6 +82,7 @@ const WithdrawalIntent = sequelize.define(
   {
     tableName: "withdrawal_intents",
     timestamps: true,
+    indexes: [{ fields: ["tenantId"] }],
   }
 );
 

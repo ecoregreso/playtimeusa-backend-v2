@@ -25,6 +25,7 @@ const staffMessagesRoutes = require("./routes/staffMessages");
 const staffPushRoutes = require("./routes/staffPush");
 const purchaseOrdersRoutes = require("./routes/purchaseOrders");
 const gamesRoutes = require("./routes/games");
+const ownerTenantsRoutes = require("./routes/ownerTenants");
 const {
   StaffUser,
   StaffKey,
@@ -33,17 +34,16 @@ const {
   PurchaseOrder,
   PurchaseOrderMessage,
   OwnerSetting,
-  ApiErrorEvent,
   LedgerEvent,
   SessionSnapshot,
   GameConfig,
   SupportTicket,
-  SafetyTelemetryEvent,
   PlayerSafetyLimit,
   PlayerSafetyAction,
 } = require("./models");
 const { Op } = require("sequelize");
-const { buildRequestMeta } = require("./services/ledgerService");
+const { buildRequestMeta, recordLedgerEvent } = require("./services/ledgerService");
+const crypto = require("crypto");
 
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
@@ -103,14 +103,22 @@ if (NODE_ENV !== "test") {
 app.use((req, res, next) => {
   res.on("finish", async () => {
     if (res.statusCode < 400) return;
+    const tenantId = req.auth?.tenantId || req.user?.tenantId || req.staff?.tenantId || null;
+    if (!tenantId) return;
     try {
-      await ApiErrorEvent.create({
+      await recordLedgerEvent({
         ts: new Date(),
-        route: req.originalUrl,
-        method: req.method,
-        statusCode: res.statusCode,
-        message: res.locals?.errorMessage || null,
-        meta: buildRequestMeta(req),
+        playerId: req.user?.id || null,
+        eventType: "ERROR",
+        actionId: crypto.randomUUID(),
+        source: "api.error",
+        meta: {
+          ...buildRequestMeta(req),
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: res.statusCode,
+          message: res.locals?.errorMessage || null,
+        },
       });
     } catch (err) {
       if (NODE_ENV !== "test") {
@@ -168,46 +176,28 @@ app.use("/api/v1/safety", safetyRoutes);
 app.use("/api/v1/games", gamesRoutes);
 app.use("/api/v1", financeRoutes);
 app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
+app.use("/api/v1/owner", ownerTenantsRoutes);
 
-// Ensure messaging tables exist without altering others
-Promise.all([
-  LedgerEvent.sync({ alter: true }),
-  SessionSnapshot.sync({ alter: true }),
-  GameConfig.sync({ alter: true }),
-  ApiErrorEvent.sync({ alter: true }),
-  SupportTicket.sync({ alter: true }),
-  SafetyTelemetryEvent.sync({ alter: true }),
-  PlayerSafetyLimit.sync({ alter: true }),
-  PlayerSafetyAction.sync({ alter: true }),
-  StaffUser.sync({ alter: true }),
-  StaffKey.sync({ alter: true }),
-  StaffMessage.sync({ alter: true }),
-  StaffPushDevice.sync({ alter: true }),
-  PurchaseOrder.sync({ alter: true }),
-  PurchaseOrderMessage.sync({ alter: true }),
-  OwnerSetting.sync(),
-])
-  .then(async () => {
-    const models = [
-      StaffUser,
-      StaffKey,
-      StaffMessage,
-      StaffPushDevice,
-      PurchaseOrder,
-      PurchaseOrderMessage,
-    ];
-    for (const model of models) {
-      try {
-        await model.update(
-          { tenantId: "default" },
-          { where: { tenantId: null } }
-        );
-      } catch (err) {
-        console.warn(`[TENANT_BACKFILL] ${model.name}: ${err.message || err}`);
-      }
-    }
-  })
-  .catch((err) => console.error("[MSG] sync error:", err.message || err));
+// Sequelize sync is disabled by default; run migrations instead.
+if (process.env.DB_SYNC === "true") {
+  Promise.all([
+    LedgerEvent.sync({ alter: true }),
+    SessionSnapshot.sync({ alter: true }),
+    GameConfig.sync({ alter: true }),
+    SupportTicket.sync({ alter: true }),
+    PlayerSafetyLimit.sync({ alter: true }),
+    PlayerSafetyAction.sync({ alter: true }),
+    StaffUser.sync({ alter: true }),
+    StaffKey.sync({ alter: true }),
+    StaffMessage.sync({ alter: true }),
+    StaffPushDevice.sync({ alter: true }),
+    PurchaseOrder.sync({ alter: true }),
+    PurchaseOrderMessage.sync({ alter: true }),
+    OwnerSetting.sync(),
+  ]).catch((err) => console.error("[MSG] sync error:", err.message || err));
+} else if (NODE_ENV !== "test") {
+  console.log("[DB] Sequelize sync disabled. Run npm run migrate.");
+}
 
 // Purge messages older than 24h every hour
 const PURGE_MS = 24 * 60 * 60 * 1000;
@@ -242,8 +232,12 @@ app.use((err, req, res, next) => {
     .json({ error: err.message || "Internal server error" });
 });
 
-app.listen(PORT, () => {
-  console.log(`[SERVER] Listening on port ${PORT} in ${NODE_ENV} mode`);
-});
+if (NODE_ENV !== "test") {
+  app.listen(PORT, () => {
+    console.log(`[SERVER] Listening on port ${PORT} in ${NODE_ENV} mode`);
+  });
+}
+
+module.exports = app;
 
 module.exports = app;

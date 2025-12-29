@@ -1,4 +1,8 @@
 const { Sequelize } = require('sequelize');
+const cls = require('cls-hooked');
+
+const namespace = cls.createNamespace('sequelize');
+Sequelize.useCLS(namespace);
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -30,4 +34,5 @@ async function initDb() {
 module.exports = {
   sequelize,
   initDb,
+  clsNamespace: namespace,
 };

@@ -9,10 +9,14 @@ const Voucher = sequelize.define('Voucher', {
     defaultValue: DataTypes.UUIDV4,
     primaryKey: true,
   },
+  tenantId: {
+    type: DataTypes.UUID,
+    allowNull: false,
+    field: "tenant_id",
+  },
   code: {
     type: DataTypes.STRING(32),
     allowNull: false,
-    unique: true,
   },
   pin: {
     type: DataTypes.STRING(16),
@@ -53,6 +57,10 @@ const Voucher = sequelize.define('Voucher', {
 }, {
   tableName: 'vouchers',
   timestamps: true,
+  indexes: [
+    { fields: ["tenantId"] },
+    { fields: ["tenantId", "code"], unique: true },
+  ],
 });
 
 // created by staff

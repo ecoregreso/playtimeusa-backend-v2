@@ -9,6 +9,11 @@ const GameRound = sequelize.define('GameRound', {
     defaultValue: DataTypes.UUIDV4,
     primaryKey: true,
   },
+  tenantId: {
+    type: DataTypes.UUID,
+    allowNull: false,
+    field: "tenant_id",
+  },
   playerId: {
     type: DataTypes.UUID,
     allowNull: false,
@@ -58,6 +63,7 @@ const GameRound = sequelize.define('GameRound', {
 }, {
   tableName: 'game_rounds',
   timestamps: true,
+  indexes: [{ fields: ["tenantId"] }],
 });
 
 // relations

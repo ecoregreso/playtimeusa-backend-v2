@@ -74,6 +74,7 @@ router.post(
         await wallet.save();
 
         await Transaction.create({
+          tenantId: req.staff?.tenantId || null,
           walletId: wallet.id,
           type: "credit",
           amount,
@@ -95,13 +96,15 @@ router.post(
       await intent.save();
 
       const staffMeta = buildRequestMeta(req, { staffRole: req.staff?.role || null });
-      await recordLedgerEvent({
-        ts: new Date(),
-        playerId: intent.userId,
+        await recordLedgerEvent({
+          ts: new Date(),
+          playerId: intent.userId,
         cashierId: req.staff?.role === "cashier" ? req.staff.id : null,
         agentId: req.staff?.role === "cashier" ? null : req.staff?.id || null,
         eventType: "DEPOSIT",
+        actionId: intent.id,
         amountCents: toCents(intent.amountFun || 0),
+        source: "finance.deposit",
         meta: {
           ...staffMeta,
           intentId: intent.id,
@@ -178,7 +181,9 @@ router.post(
         cashierId: req.staff?.role === "cashier" ? req.staff.id : null,
         agentId: req.staff?.role === "cashier" ? null : req.staff?.id || null,
         eventType: "WITHDRAW",
+        actionId: intent.id,
         amountCents: toCents(-(intent.amountFun || 0)),
+        source: "finance.withdraw",
         meta: {
           ...staffMeta,
           intentId: intent.id,

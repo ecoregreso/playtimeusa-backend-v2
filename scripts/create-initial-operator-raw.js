@@ -69,15 +69,32 @@ async function main() {
     // 2) Hash password
     const hash = await bcrypt.hash(password, 10);
 
-    // 3) Insert new staff user
+    // 3) Ensure default tenant
+    let tenantId = null;
+    const [tenantRows] = await sequelize.query(
+      "SELECT id FROM tenants WHERE name = $1 LIMIT 1",
+      { bind: ["Default"] }
+    );
+    if (tenantRows && tenantRows.length > 0) {
+      tenantId = tenantRows[0].id;
+    } else {
+      const [createdRows] = await sequelize.query(
+        "INSERT INTO tenants (name, status, \"createdAt\", \"updatedAt\") VALUES ($1, 'active', NOW(), NOW()) RETURNING id",
+        { bind: ["Default"] }
+      );
+      tenantId = createdRows[0].id;
+    }
+
+    // 4) Insert new staff user
     const [insertRows] = await sequelize.query(
       `INSERT INTO staff_users
-        (email, "passwordHash", "displayName", "role", "permissions", "isActive", "createdAt", "updatedAt")
+        (tenant_id, email, "passwordHash", "displayName", "role", "permissions", "isActive", "createdAt", "updatedAt")
        VALUES
-        ($1, $2, $3, $4, $5::jsonb, true, NOW(), NOW())
+        ($1, $2, $3, $4, $5, $6::jsonb, true, NOW(), NOW())
        RETURNING id, email, "displayName", "role", "permissions", "isActive"`,
       {
         bind: [
+          tenantId,
           email.toLowerCase(),
           hash,
           displayName,

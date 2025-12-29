@@ -9,6 +9,11 @@ const SupportTicket = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    tenantId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
+    },
     playerId: {
       type: DataTypes.UUID,
       allowNull: true,
@@ -47,6 +52,7 @@ const SupportTicket = sequelize.define(
     tableName: "support_tickets",
     timestamps: true,
     indexes: [
+      { fields: ["tenantId"] },
       { fields: ["status"] },
       { fields: ["assignedStaffId"] },
       { fields: ["createdAt"] },

@@ -1,6 +1,7 @@
 // src/middleware/staffAuth.js
 const jwt = require("jsonwebtoken");
 const { StaffUser } = require("../models");
+const { initTenantContext } = require("./tenantContext");
 const {
   PERMISSIONS,
   ROLE_DEFAULT_PERMISSIONS,
@@ -18,14 +19,15 @@ function normalizePermissions(staff) {
 }
 
 function signStaffToken(staff) {
-  const permissions = normalizePermissions(staff);
-  const payload = {
-    sub: staff.id,
-    type: "staff",
-    role: staff.role,
-    tenantId: staff.tenantId || null,
-    permissions,
-  };
+    const permissions = normalizePermissions(staff);
+    const payload = {
+      sub: staff.id,
+      type: "staff",
+      role: staff.role,
+      tenantId: staff.tenantId || null,
+      distributorId: staff.distributorId || null,
+      permissions,
+    };
   return jwt.sign(payload, STAFF_JWT_SECRET, {
     expiresIn: STAFF_JWT_EXPIRES_IN,
   });
@@ -68,41 +70,62 @@ function requireStaffAuth(requiredPermissions = []) {
     }
 
     try {
-      const staff = await StaffUser.findByPk(payload.sub);
-      if (!staff || !staff.isActive) {
-        return res.status(403).json({ ok: false, error: "Staff inactive" });
-      }
+      return await initTenantContext(
+        req,
+        res,
+        {
+          tenantId: payload.tenantId || null,
+          role: payload.role,
+          userId: payload.sub,
+          distributorId: payload.distributorId || null,
+          allowMissingTenant: payload.role === "owner",
+        },
+        async () => {
+          const staff = await StaffUser.findByPk(payload.sub);
+          if (!staff || !staff.isActive) {
+            return res.status(403).json({ ok: false, error: "Staff inactive" });
+          }
 
-      if (payload.tenantId && staff.tenantId && payload.tenantId !== staff.tenantId) {
-        return res.status(403).json({ ok: false, error: "Tenant mismatch" });
-      }
+          if (payload.tenantId && staff.tenantId && payload.tenantId !== staff.tenantId) {
+            return res.status(403).json({ ok: false, error: "Tenant mismatch" });
+          }
 
-      const permissions = normalizePermissions({
-        ...staff.toJSON(),
-        permissions: payload.permissions || staff.permissions,
-      });
+          const permissions = normalizePermissions({
+            ...staff.toJSON(),
+            permissions: payload.permissions || staff.permissions,
+          });
 
-      if (!hasPermissions(permissions, requiredPermissions)) {
-        return res
-          .status(403)
-          .json({ ok: false, error: "Forbidden: insufficient permissions" });
-      }
+          if (!hasPermissions(permissions, requiredPermissions)) {
+            return res
+              .status(403)
+              .json({ ok: false, error: "Forbidden: insufficient permissions" });
+          }
 
-      req.staff = {
-        id: staff.id,
-        username: staff.username,
-        role: staff.role,
-        permissions,
-        agentCode: staff.agentCode,
-        parentId: staff.parentId,
-        isActive: staff.isActive,
-        tenantId: staff.tenantId || payload.tenantId || "default",
-      };
+          req.staff = {
+            id: staff.id,
+            username: staff.username,
+            role: staff.role,
+            permissions,
+            agentCode: staff.agentCode,
+            parentId: staff.parentId,
+            isActive: staff.isActive,
+            tenantId: staff.tenantId || payload.tenantId || null,
+            distributorId: staff.distributorId || payload.distributorId || null,
+          };
+          req.auth = {
+            userId: staff.id,
+            role: staff.role,
+            tenantId: req.staff.tenantId,
+            distributorId: req.staff.distributorId,
+          };
 
-      return next();
+          return next();
+        }
+      );
     } catch (err) {
       console.error("[STAFF_AUTH] error:", err);
-      return res.status(500).json({ ok: false, error: "Auth error" });
+      const status = err.status || 500;
+      return res.status(status).json({ ok: false, error: err.message || "Auth error" });
     }
   };
 }

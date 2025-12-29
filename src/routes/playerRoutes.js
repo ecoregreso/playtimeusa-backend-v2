@@ -3,9 +3,11 @@ const bcrypt = require("bcryptjs");
 
 const { Op } = require("sequelize");
 const { sequelize, User, Wallet, Voucher, Transaction, Session } = require("../models");
+const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { signAccessToken, signRefreshToken } = require("../utils/jwt");
 const { requireAuth } = require("../middleware/auth");
+const { initTenantContext } = require("../middleware/tenantContext");
 
 const router = express.Router();
 
@@ -18,11 +20,21 @@ router.get("/ping", (req, res) => {
   });
 });
 
-async function getOrCreateWallet(userId, t) {
-  let wallet = await Wallet.findOne({ where: { userId }, transaction: t });
+async function getOrCreateWallet(userId, tenantId, t) {
+  let wallet = await Wallet.findOne({
+    where: { userId, tenantId },
+    transaction: t,
+  });
   if (!wallet) {
     wallet = await Wallet.create(
-      { userId, balance: 0, currency: "FUN" },
+      {
+        userId,
+        tenantId,
+        balance: 0,
+        currency: "FUN",
+        bonusPending: 0,
+        bonusUnacked: 0,
+      },
       { transaction: t }
     );
   }
@@ -32,6 +44,7 @@ async function getOrCreateWallet(userId, t) {
 async function createPlayerSession(user, req) {
   try {
     const session = await Session.create({
+      tenantId: user.tenantId,
       actorType: "user",
       userId: String(user.id),
       role: user.role,
@@ -71,27 +84,38 @@ async function touchPlayerSession(userId, req) {
 router.post("/login", async (req, res) => {
   const code = (req.body?.code || req.body?.userCode || "").trim();
   const pin = (req.body?.pin || "").trim();
+  const tenantId = req.body?.tenantId || req.body?.tenant_id || null;
 
-  if (!code || !pin) {
+  if (!code || !pin || !tenantId) {
     return res
       .status(400)
-      .json({ ok: false, error: "code and pin are required" });
+      .json({ ok: false, error: "code, pin, and tenantId are required" });
   }
 
   try {
-    // First, look for a NEW voucher (primary login path)
-    let voucher = await Voucher.findOne({
-      where: {
-        code: { [Op.iLike]: code },
-        pin: { [Op.iLike]: pin },
-        status: { [Op.in]: ["new", "NEW"] },
+    return await initTenantContext(
+      req,
+      res,
+      {
+        tenantId,
+        role: "player",
+        userId: null,
+        allowMissingTenant: false,
       },
-    });
+      async () => {
+        // First, look for a NEW voucher (primary login path)
+        let voucher = await Voucher.findOne({
+          where: {
+            code: { [Op.iLike]: code },
+            pin: { [Op.iLike]: pin },
+            status: { [Op.in]: ["new", "NEW"] },
+          },
+        });
 
     // Fallback: allow re-login with existing player credentials if voucher already redeemed
     if (!voucher) {
       const user = await User.findOne({
-        where: { username: code },
+        where: { username: code, tenantId },
         include: [{ model: Wallet, as: "wallet" }],
       });
 
@@ -108,7 +132,8 @@ router.post("/login", async (req, res) => {
           .json({ ok: false, error: "Voucher not found or invalid pin" });
       }
 
-      const wallet = user.wallet || (await getOrCreateWallet(user.id));
+      const wallet = user.wallet || (await getOrCreateWallet(user.id, tenantId));
+      const bonusState = buildBonusState(wallet);
       const accessToken = signAccessToken(user);
       const refreshToken = signRefreshToken(user);
       const sessionId = await createPlayerSession(user, req);
@@ -117,7 +142,9 @@ router.post("/login", async (req, res) => {
         ts: new Date(),
         playerId: user.id,
         sessionId,
+        actionId: sessionId,
         eventType: "LOGIN",
+        source: "player.login",
         meta: buildRequestMeta(req, { source: "voucher_relogin" }),
       });
 
@@ -127,15 +154,22 @@ router.post("/login", async (req, res) => {
           id: user.id,
           username: user.username,
           role: user.role,
+          bonusAckRequired: bonusState.ackRequired,
+          bonusAppliedMinor: bonusState.appliedMinor,
+          bonusPendingMinor: bonusState.pendingMinor,
+          bonusBalanceMinor: bonusState.pendingMinor,
         },
         wallet: wallet
           ? {
               id: wallet.id,
               balance: Number(wallet.balance || 0),
               currency: wallet.currency,
+              bonusPending: Number(wallet.bonusPending || 0),
+              bonusUnacked: Number(wallet.bonusUnacked || 0),
             }
           : null,
         voucher: null,
+        bonus: bonusState,
         tokens: { accessToken, refreshToken },
         sessionId,
       });
@@ -155,14 +189,15 @@ router.post("/login", async (req, res) => {
     }
 
     let redeemMeta = null;
-    const result = await sequelize.transaction(async (t) => {
+    const result = await sequelize.transaction({ transaction: req.transaction }, async (t) => {
       // Create player if missing (use voucher code as username, synthetic email)
       const email = `${code.toLowerCase()}@player.playtime`;
       const passwordHash = await bcrypt.hash(pin, 10);
 
       const [user] = await User.findOrCreate({
-        where: { username: code },
+        where: { username: code, tenantId },
         defaults: {
+          tenantId,
           email,
           username: code,
           passwordHash,
@@ -172,28 +207,29 @@ router.post("/login", async (req, res) => {
         transaction: t,
       });
 
-      const wallet = await getOrCreateWallet(user.id, t);
+      const wallet = await getOrCreateWallet(user.id, tenantId, t);
 
       // If not yet redeemed, apply credit now
       if (status !== "redeemed") {
         const before = Number(wallet.balance || 0);
         const amount = Number(voucher.amount || 0);
         const bonus = Number(voucher.bonusAmount || 0);
-        const total = amount + bonus;
         redeemMeta = { voucherId: voucher.id, amount, bonus };
 
-        wallet.balance = before + total;
+        wallet.balance = before + amount;
+        wallet.bonusPending = Number(wallet.bonusPending || 0) + bonus;
         await wallet.save({ transaction: t });
 
         await Transaction.create(
           {
+            tenantId,
             walletId: wallet.id,
             type: "voucher_credit",
-            amount: total,
+            amount,
             balanceBefore: before,
             balanceAfter: wallet.balance,
             reference: `voucher:${voucher.code}`,
-            metadata: { voucherId: voucher.id, amount, bonus },
+            metadata: { voucherId: voucher.id, amount, bonusPending: bonus },
             createdByUserId: user.id,
           },
           { transaction: t }
@@ -205,6 +241,13 @@ router.post("/login", async (req, res) => {
         await voucher.save({ transaction: t });
       }
 
+      const bonusResult = await applyPendingBonusIfEligible({
+        wallet,
+        transaction: t,
+        reference: `bonus:${voucher.code}`,
+        metadata: { voucherId: voucher.id },
+      });
+
       const accessToken = signAccessToken(user);
       const refreshToken = signRefreshToken(user);
 
@@ -213,8 +256,11 @@ router.post("/login", async (req, res) => {
         wallet,
         voucher,
         tokens: { accessToken, refreshToken },
+        bonusResult,
       };
     });
+
+    const bonusState = buildBonusState(result.wallet);
 
     const sessionId = await createPlayerSession(result.user, req);
     const loginMeta = buildRequestMeta(req, { source: "voucher_login" });
@@ -223,7 +269,9 @@ router.post("/login", async (req, res) => {
       ts: new Date(),
       playerId: result.user.id,
       sessionId,
+      actionId: sessionId,
       eventType: "LOGIN",
+      source: "player.login",
       meta: loginMeta,
     });
 
@@ -232,8 +280,10 @@ router.post("/login", async (req, res) => {
         ts: new Date(),
         playerId: result.user.id,
         sessionId,
+        actionId: redeemMeta.voucherId,
         eventType: "VOUCHER_REDEEMED",
         amountCents: toCents(redeemMeta.amount + redeemMeta.bonus),
+        source: "player.voucher_redeem",
         meta: {
           ...loginMeta,
           voucherId: redeemMeta.voucherId,
@@ -243,30 +293,40 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    return res.json({
-      ok: true,
-      user: {
-        id: result.user.id,
-        username: result.user.username,
-        role: result.user.role,
-      },
-      wallet: {
-        id: result.wallet.id,
-        balance: Number(result.wallet.balance || 0),
-        currency: result.wallet.currency,
-      },
-      voucher: {
-        id: result.voucher.id,
-        code: result.voucher.code,
-        status: result.voucher.status,
-        redeemedAt: result.voucher.redeemedAt,
-      },
-      tokens: result.tokens,
-      sessionId,
-    });
+        return res.json({
+          ok: true,
+          user: {
+            id: result.user.id,
+            username: result.user.username,
+            role: result.user.role,
+            bonusAckRequired: bonusState.ackRequired,
+            bonusAppliedMinor: bonusState.appliedMinor,
+            bonusPendingMinor: bonusState.pendingMinor,
+            bonusBalanceMinor: bonusState.pendingMinor,
+          },
+          wallet: {
+            id: result.wallet.id,
+            balance: Number(result.wallet.balance || 0),
+            currency: result.wallet.currency,
+            bonusPending: Number(result.wallet.bonusPending || 0),
+            bonusUnacked: Number(result.wallet.bonusUnacked || 0),
+          },
+          voucher: {
+            id: result.voucher.id,
+            code: result.voucher.code,
+            status: result.voucher.status,
+            redeemedAt: result.voucher.redeemedAt,
+          },
+          bonus: bonusState,
+          tokens: result.tokens,
+          sessionId,
+        });
+      }
+    );
   } catch (err) {
     console.error("[PLAYER_LOGIN] error:", err);
-    res.status(500).json({ ok: false, error: "Failed to redeem voucher" });
+    const status = err.status || 500;
+    res.status(status).json({ ok: false, error: err.message || "Failed to redeem voucher" });
   }
 });
 
@@ -280,6 +340,7 @@ router.get("/me", requireAuth, async (req, res) => {
     if (!user || user.role !== "player") {
       return res.status(404).json({ ok: false, error: "Player not found" });
     }
+    const bonusState = buildBonusState(user.wallet);
     res.json({
       ok: true,
       user: {
@@ -287,18 +348,40 @@ router.get("/me", requireAuth, async (req, res) => {
         username: user.username,
         role: user.role,
         isActive: user.isActive,
+        bonusAckRequired: bonusState.ackRequired,
+        bonusAppliedMinor: bonusState.appliedMinor,
+        bonusPendingMinor: bonusState.pendingMinor,
+        bonusBalanceMinor: bonusState.pendingMinor,
       },
       wallet: user.wallet
         ? {
             id: user.wallet.id,
             balance: Number(user.wallet.balance || 0),
             currency: user.wallet.currency,
+            bonusPending: Number(user.wallet.bonusPending || 0),
+            bonusUnacked: Number(user.wallet.bonusUnacked || 0),
           }
         : null,
+      bonus: bonusState,
     });
   } catch (err) {
     console.error("[PLAYER_ME] error:", err);
     res.status(500).json({ ok: false, error: "Failed to load player" });
+  }
+});
+
+router.post("/bonus/ack", requireAuth, async (req, res) => {
+  try {
+    const wallet = await Wallet.findOne({ where: { userId: req.user.id } });
+    if (!wallet) {
+      return res.status(404).json({ ok: false, error: "Wallet not found" });
+    }
+    wallet.bonusUnacked = 0;
+    await wallet.save();
+    return res.json({ ok: true, bonus: buildBonusState(wallet) });
+  } catch (err) {
+    console.error("[PLAYER_BONUS_ACK] error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to acknowledge bonus" });
   }
 });
 

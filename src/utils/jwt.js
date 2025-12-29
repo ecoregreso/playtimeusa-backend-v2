@@ -13,6 +13,8 @@ function signAccessToken(user) {
     {
       sub: user.id,
       role: user.role,
+      tenantId: user.tenantId || null,
+      distributorId: user.distributorId || null,
       type: 'access',
     },
     ACCESS_SECRET,
@@ -25,6 +27,8 @@ function signRefreshToken(user) {
     {
       sub: user.id,
       role: user.role,
+      tenantId: user.tenantId || null,
+      distributorId: user.distributorId || null,
       type: 'refresh',
     },
     REFRESH_SECRET,
@@ -45,6 +49,8 @@ function signAdminToken(user) {
     {
       sub: user.id,
       role: user.role,
+      tenantId: user.tenantId || null,
+      distributorId: user.distributorId || null,
       type: 'admin',
     },
     ADMIN_SECRET,

@@ -9,6 +9,11 @@ const ApiErrorEvent = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    tenantId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
+    },
     ts: {
       type: DataTypes.DATE,
       allowNull: false,
@@ -38,7 +43,11 @@ const ApiErrorEvent = sequelize.define(
   {
     tableName: "api_error_events",
     timestamps: true,
-    indexes: [{ fields: ["ts"] }, { fields: ["route", "ts"] }],
+    indexes: [
+      { fields: ["tenantId"] },
+      { fields: ["ts"] },
+      { fields: ["route", "ts"] },
+    ],
   }
 );
 

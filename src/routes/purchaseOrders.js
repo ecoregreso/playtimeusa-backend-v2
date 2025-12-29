@@ -16,7 +16,6 @@ const { PERMISSIONS } = require("../constants/permissions");
 
 const router = express.Router();
 
-const DEFAULT_TENANT = "default";
 
 const STATUS = {
   PENDING: "pending",
@@ -27,7 +26,7 @@ const STATUS = {
 };
 
 function ownerKey(tenantId) {
-  return `${tenantId || DEFAULT_TENANT}:ownerBtcAddress`;
+  return `${tenantId}:ownerBtcAddress`;
 }
 
 function threadIdForPair(a, b) {
@@ -43,7 +42,7 @@ async function getOwnerAddress(tenantId) {
 async function getOwners(tenantId) {
   return StaffUser.findAll({
     where: {
-      tenantId: tenantId || DEFAULT_TENANT,
+      tenantId,
       isActive: true,
       [Op.or]: [
         { role: "owner" },
@@ -152,7 +151,7 @@ router.post(
         note: note || "",
         requestedBy: req.staff?.username || "agent",
         requestedById: req.staff?.id || null,
-        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        tenantId: req.staff?.tenantId,
       });
 
       if (note?.trim()) {
@@ -161,16 +160,16 @@ router.post(
           sender: req.staff?.username || "staff",
           senderRole: req.staff?.role || "staff",
           body: note.trim(),
-          tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+          tenantId: req.staff?.tenantId,
         });
       }
 
        // Send a plain-text inbox notification to owners in this tenant
        try {
-         const owners = await getOwners(req.staff?.tenantId || DEFAULT_TENANT);
+         const owners = await getOwners(req.staff?.tenantId);
          const senderId = req.staff?.id;
          const summary = `New funcoin order #${order.id} by ${order.requestedBy}: ${order.funAmount} FC -> ${order.btcAmount} BTC @ ${order.btcRate || "n/a"} (status: ${order.status})`;
-         const tenantId = req.staff?.tenantId || DEFAULT_TENANT;
+         const tenantId = req.staff?.tenantId;
          const ownerIds = owners.map((o) => o.id).filter(Boolean);
          for (const owner of owners) {
            if (!senderId || !owner.id) continue;
@@ -216,9 +215,9 @@ router.get(
     try {
       const isOwner = (req.staff?.permissions || []).includes(PERMISSIONS.FINANCE_WRITE);
       const where = isOwner
-        ? { tenantId: req.staff?.tenantId || DEFAULT_TENANT }
+        ? { tenantId: req.staff?.tenantId }
         : {
-            tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+            tenantId: req.staff?.tenantId,
             requestedById: req.staff?.id || -1,
           };
 
@@ -254,7 +253,7 @@ router.get(
         return res.status(403).json({ ok: false, error: "Forbidden" });
       }
       const messages = await PurchaseOrderMessage.findAll({
-        where: { orderId: order.id, tenantId: req.staff?.tenantId || DEFAULT_TENANT },
+        where: { orderId: order.id, tenantId: req.staff?.tenantId },
         order: [["createdAt", "ASC"]],
       });
       res.json({ ok: true, messages });
@@ -285,7 +284,7 @@ router.post(
         sender: req.staff?.username || "staff",
         senderRole: req.staff?.role || "staff",
         body,
-        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        tenantId: req.staff?.tenantId,
       });
 
       res.status(201).json({ ok: true, message: msg });
@@ -317,7 +316,7 @@ router.post(
 
       order.ownerBtcAddress = ownerBtcAddress;
       order.status = STATUS.APPROVED;
-      order.tenantId = req.staff?.tenantId || DEFAULT_TENANT;
+      order.tenantId = req.staff?.tenantId;
       await order.save();
 
       const message =
@@ -328,11 +327,11 @@ router.post(
         sender: req.staff?.username || "owner",
         senderRole: req.staff?.role || "owner",
         body: message,
-        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        tenantId: req.staff?.tenantId,
       });
 
       await notifyOrderStatusByEmail({
-        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        tenantId: req.staff?.tenantId,
         order,
       });
 
@@ -381,11 +380,11 @@ router.post(
         sender: req.staff?.username || "agent",
         senderRole: req.staff?.role || "agent",
         body,
-        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        tenantId: req.staff?.tenantId,
       });
 
       await notifyOrderStatusByEmail({
-        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        tenantId: req.staff?.tenantId,
         order,
       });
 
@@ -423,11 +422,11 @@ router.post(
         sender: req.staff?.username || "owner",
         senderRole: req.staff?.role || "owner",
         body,
-        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        tenantId: req.staff?.tenantId,
       });
 
       await notifyOrderStatusByEmail({
-        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        tenantId: req.staff?.tenantId,
         order,
       });
 
@@ -470,11 +469,11 @@ router.post(
         sender: req.staff?.username || "agent",
         senderRole: req.staff?.role || "agent",
         body,
-        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        tenantId: req.staff?.tenantId,
       });
 
       await notifyOrderStatusByEmail({
-        tenantId: req.staff?.tenantId || DEFAULT_TENANT,
+        tenantId: req.staff?.tenantId,
         order,
       });
 

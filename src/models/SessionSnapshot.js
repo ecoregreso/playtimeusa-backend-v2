@@ -9,6 +9,11 @@ const SessionSnapshot = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    tenantId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
+    },
     sessionId: {
       type: DataTypes.STRING(128),
       allowNull: false,
@@ -63,6 +68,7 @@ const SessionSnapshot = sequelize.define(
     tableName: "session_snapshots",
     timestamps: true,
     indexes: [
+      { fields: ["tenantId"] },
       { fields: ["startedAt"] },
       { fields: ["endedAt"] },
       { fields: ["playerId", "startedAt"] },

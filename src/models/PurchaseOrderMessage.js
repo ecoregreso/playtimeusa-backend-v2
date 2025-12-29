@@ -29,9 +29,9 @@ const PurchaseOrderMessage = sequelize.define(
       allowNull: true,
     },
     tenantId: {
-      type: DataTypes.STRING(64),
-      allowNull: true,
-      defaultValue: "default",
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
     },
     body: {
       type: DataTypes.TEXT,

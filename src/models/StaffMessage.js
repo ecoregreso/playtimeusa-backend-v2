@@ -23,9 +23,9 @@ const StaffMessage = sequelize.define(
       allowNull: false,
     },
     tenantId: {
-      type: DataTypes.STRING(64),
-      allowNull: true,
-      defaultValue: "default",
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
     },
     type: {
       type: DataTypes.STRING(48),

@@ -6,12 +6,16 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "test": "echo \"No tests defined yet\" && exit 0"
+    "test": "echo \"No tests defined yet\" && exit 0",
+    "migrate": "node scripts/migrate.js",
+    "test:rls": "bash scripts/test_rls.sh",
+    "smoke": "node scripts/smoke.js"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
     "apn": "^2.2.0",
     "bcryptjs": "^2.4.3",
+    "cls-hooked": "^4.2.2",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.22.0",
@@ -27,6 +31,7 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
+    "nodemon": "^3.1.0",
+    "supertest": "^6.3.4"
   }
 }

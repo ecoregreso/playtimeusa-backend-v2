@@ -9,6 +9,11 @@ const LedgerEvent = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    tenantId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
+    },
     ts: {
       type: DataTypes.DATE,
       allowNull: false,
@@ -19,6 +24,10 @@ const LedgerEvent = sequelize.define(
       allowNull: true,
     },
     sessionId: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+    },
+    actionId: {
       type: DataTypes.STRING(128),
       allowNull: true,
     },
@@ -54,6 +63,10 @@ const LedgerEvent = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: true,
     },
+    source: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+    },
     meta: {
       type: DataTypes.JSONB,
       allowNull: true,
@@ -66,8 +79,10 @@ const LedgerEvent = sequelize.define(
       { fields: ["ts"] },
       { fields: ["playerId", "ts"] },
       { fields: ["sessionId", "ts"] },
+      { fields: ["tenantId", "actionId", "eventType"], unique: true },
       { fields: ["gameKey", "ts"] },
       { fields: ["eventType", "ts"] },
+      { fields: ["tenantId"] },
     ],
   }
 );

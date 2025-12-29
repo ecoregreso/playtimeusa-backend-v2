@@ -25,15 +25,37 @@ async function run() {
       process.exit(0);
     }
 
-    for (const entry of entries) {
-      if (!entry.gameKey) continue;
-      await GameConfig.upsert({
-        gameKey: entry.gameKey,
-        provider: entry.provider || null,
-        expectedRtp: entry.expectedRtp || null,
-        volatilityLabel: entry.volatilityLabel || null,
-      });
+    const [tenantRows] = await sequelize.query(
+      "SELECT id FROM tenants WHERE name = $1 LIMIT 1",
+      { bind: ["Default"] }
+    );
+    const tenantId = tenantRows?.[0]?.id || null;
+    if (!tenantId) {
+      console.log("[GAME_CONFIG] Default tenant missing. Run migrations first.");
+      process.exit(1);
     }
+
+    await sequelize.transaction(async (t) => {
+      await sequelize.query("SET LOCAL app.role = 'owner'", { transaction: t });
+      await sequelize.query("SET LOCAL app.tenant_id = :tenantId", {
+        transaction: t,
+        replacements: { tenantId },
+      });
+
+      for (const entry of entries) {
+        if (!entry.gameKey) continue;
+        await GameConfig.upsert(
+          {
+            tenantId,
+            gameKey: entry.gameKey,
+            provider: entry.provider || null,
+            expectedRtp: entry.expectedRtp || null,
+            volatilityLabel: entry.volatilityLabel || null,
+          },
+          { transaction: t }
+        );
+      }
+    });
 
     console.log(`[GAME_CONFIG] Seeded ${entries.length} configs.`);
     await sequelize.close();

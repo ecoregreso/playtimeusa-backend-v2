@@ -31,7 +31,7 @@ router.get("/vapid-public", staffAuth, requirePushRole, (req, res) => {
 router.get("/devices", staffAuth, requirePushRole, async (req, res) => {
   try {
     const devices = await StaffPushDevice.findAll({
-      where: { staffId: req.staff.id, tenantId: req.staff?.tenantId || "default" },
+      where: { staffId: req.staff.id, tenantId: req.staff?.tenantId || null },
       order: [["createdAt", "DESC"]],
     });
     return res.json({
@@ -80,7 +80,7 @@ router.post("/register", staffAuth, requirePushRole, async (req, res) => {
 
     const tokenHash = hashToken(raw);
     const encryptedToken = encryptString(raw);
-    const tenantId = req.staff?.tenantId || "default";
+    const tenantId = req.staff?.tenantId || null;
 
     const existing = await StaffPushDevice.findOne({
       where: {
@@ -139,7 +139,7 @@ router.delete("/devices/:id", staffAuth, requirePushRole, async (req, res) => {
 // Send a test notification
 router.post("/test", staffAuth, requirePushRole, async (req, res) => {
   try {
-    const tenantId = req.staff?.tenantId || "default";
+    const tenantId = req.staff?.tenantId || null;
     const result = await sendPushToStaffIds({
       tenantId,
       staffIds: [req.staff.id],

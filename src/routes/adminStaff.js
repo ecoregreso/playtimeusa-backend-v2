@@ -75,6 +75,7 @@ router.post("/", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, res) =
     const passwordHash = await bcrypt.hash(String(password), 10);
 
     const staff = await StaffUser.create({
+      tenantId: req.staff?.tenantId || null,
       username,
       email: email || null,
       passwordHash,

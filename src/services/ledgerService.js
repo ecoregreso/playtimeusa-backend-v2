@@ -41,8 +41,15 @@ function buildRequestMeta(req, extra = {}) {
 
 async function recordLedgerEvent(payload) {
   try {
-    const event = await LedgerEvent.create(payload);
-    return event;
+    const actionId = payload?.actionId ? String(payload.actionId) : null;
+    if (actionId) {
+      const [event] = await LedgerEvent.findOrCreate({
+        where: { actionId, eventType: payload.eventType },
+        defaults: { ...payload, actionId },
+      });
+      return event;
+    }
+    return await LedgerEvent.create(payload);
   } catch (err) {
     console.warn("[LEDGER] failed to record event:", err.message || err);
     return null;

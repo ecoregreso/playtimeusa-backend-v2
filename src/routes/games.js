@@ -2,17 +2,29 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const { sequelize } = require('../db');
-const { Wallet, Transaction, GameRound, Session } = require('../models');
+const { Wallet, Transaction, GameRound, Session, PlayerSafetyAction } = require('../models');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
+const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
+const safetyEngine = require("../services/playerSafetyEngine");
 
 const router = express.Router();
 
-async function getOrCreateWallet(userId, t) {
-  let wallet = await Wallet.findOne({ where: { userId }, transaction: t });
+async function getOrCreateWallet(userId, tenantId, t) {
+  let wallet = await Wallet.findOne({
+    where: { userId, tenantId },
+    transaction: t,
+  });
   if (!wallet) {
     wallet = await Wallet.create(
-      { userId, balance: 0, currency: 'FUN' },
+      {
+        userId,
+        tenantId,
+        balance: 0,
+        currency: "FUN",
+        bonusPending: 0,
+        bonusUnacked: 0,
+      },
       { transaction: t }
     );
   }
@@ -47,7 +59,7 @@ router.post(
   requireAuth,
   requireRole('player'),
   async (req, res) => {
-    const t = await sequelize.transaction();
+    const t = await sequelize.transaction({ transaction: req.transaction });
     try {
       const { gameId } = req.params;
       const {
@@ -64,7 +76,46 @@ router.post(
         return res.status(400).json({ error: 'betAmount must be > 0' });
       }
 
-      const wallet = await getOrCreateWallet(req.user.id, t);
+      const sessionId = await resolveSessionId(req, req.user.id, t);
+      const proposedLossCents = toCents(amount);
+
+      try {
+        await safetyEngine.enforceLossLimit(
+          { playerId: req.user.id, sessionId },
+          proposedLossCents
+        );
+      } catch (err) {
+        await t.rollback();
+        if (err?.code === "LOSS_LIMIT_REACHED") {
+          await PlayerSafetyAction.create({
+            tenantId: req.auth?.tenantId || null,
+            playerId: req.user.id,
+            sessionId,
+            gameKey: gameId,
+            actionType: "STOP",
+            reasonCodes: ["LOSS_LIMIT_HIT"],
+            severity: 5,
+            details: {
+              score: 100,
+              band: "STOP",
+              evidence: {
+                lossLimitCents: err.lossLimitCents,
+                currentLossCents: err.currentLossCents,
+                projectedLossCents: err.projectedLossCents,
+              },
+            },
+          });
+          return res.status(403).json({
+            ok: false,
+            code: "LOSS_LIMIT_REACHED",
+            message: "Loss limit reached for this session.",
+            action: { actionType: "STOP", message: safetyEngine.ACTION_MESSAGES.STOP },
+          });
+        }
+        throw err;
+      }
+
+      const wallet = await getOrCreateWallet(req.user.id, req.auth?.tenantId || null, t);
 
       const balanceBefore = parseFloat(wallet.balance || 0);
       if (balanceBefore < amount) {
@@ -76,7 +127,6 @@ router.post(
       wallet.balance = balanceAfter;
       await wallet.save({ transaction: t });
 
-      const sessionId = await resolveSessionId(req, req.user.id, t);
       const txMetadata = {
         gameId,
         roundIndex: roundIndex ?? null,
@@ -86,6 +136,7 @@ router.post(
 
       const betTx = await Transaction.create(
         {
+          tenantId: req.auth?.tenantId || null,
           walletId: wallet.id,
           type: 'game_bet',
           amount,
@@ -105,6 +156,7 @@ router.post(
 
       const round = await GameRound.create(
         {
+          tenantId: req.auth?.tenantId || null,
           playerId: req.user.id,
           gameId,
           roundIndex: roundIndex ?? null,
@@ -118,6 +170,13 @@ router.post(
         { transaction: t }
       );
 
+      await applyPendingBonusIfEligible({
+        wallet,
+        transaction: t,
+        reference: `bonus:${gameId}:${roundIndex ?? "spin"}`,
+        metadata: { gameId, roundIndex: roundIndex ?? null, roundId: round.id },
+      });
+
       await t.commit();
 
       const betMeta = buildRequestMeta(req, { roundId: round.id });
@@ -125,11 +184,13 @@ router.post(
         ts: new Date(),
         playerId: req.user.id,
         sessionId: sessionId ? String(sessionId) : null,
+        actionId: round.id,
         gameKey: gameId,
         eventType: "BET",
         amountCents: toCents(-amount),
         betCents: toCents(amount),
         balanceCents: toCents(balanceAfter),
+        source: "games.bet",
         meta: betMeta,
       });
 
@@ -137,9 +198,11 @@ router.post(
         ts: new Date(),
         playerId: req.user.id,
         sessionId: sessionId ? String(sessionId) : null,
+        actionId: round.id,
         gameKey: gameId,
         eventType: "SPIN",
         betCents: toCents(amount),
+        source: "games.bet",
         meta: betMeta,
       });
 
@@ -147,6 +210,7 @@ router.post(
         wallet,
         transaction: betTx,
         round,
+        bonus: buildBonusState(wallet),
       });
     } catch (err) {
       console.error('[GAMES] POST /games/:gameId/bet error:', err);
@@ -166,7 +230,7 @@ router.post(
   requireAuth,
   requireRole('player', 'admin'),
   async (req, res) => {
-    const t = await sequelize.transaction();
+    const t = await sequelize.transaction({ transaction: req.transaction });
     try {
       const { gameId } = req.params;
       const { roundId, winAmount, result, metadata } = req.body;
@@ -204,7 +268,7 @@ router.post(
         round?.metadata?.sessionId ||
         null;
 
-      let wallet = await getOrCreateWallet(round.playerId, t);
+      let wallet = await getOrCreateWallet(round.playerId, req.auth?.tenantId || null, t);
       const balanceBefore = parseFloat(wallet.balance || 0);
       let balanceAfter = balanceBefore;
       let winTx = null;
@@ -223,6 +287,7 @@ router.post(
 
         winTx = await Transaction.create(
           {
+            tenantId: req.auth?.tenantId || null,
             walletId: wallet.id,
             type: 'game_win',
             amount: win,
@@ -264,11 +329,13 @@ router.post(
           ts: new Date(),
           playerId: round.playerId,
           sessionId: sessionId ? String(sessionId) : null,
+          actionId: round.id,
           gameKey: gameId,
           eventType: "WIN",
           amountCents: toCents(win),
           winCents: toCents(win),
           balanceCents: toCents(balanceAfter),
+          source: "games.settle",
           meta: buildRequestMeta(req, { roundId: round.id }),
         });
       }

@@ -9,6 +9,11 @@ const PlayerSafetyAction = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    tenantId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
+    },
     playerId: {
       type: DataTypes.UUID,
       allowNull: true,
@@ -42,6 +47,7 @@ const PlayerSafetyAction = sequelize.define(
     tableName: "player_safety_actions",
     timestamps: true,
     indexes: [
+      { fields: ["tenantId"] },
       { fields: ["sessionId", "createdAt"] },
       { fields: ["playerId", "createdAt"] },
       { fields: ["actionType", "createdAt"] },

@@ -1,9 +1,8 @@
-// src/models/Tenant.js
 const { DataTypes } = require("sequelize");
 const { sequelize } = require("../db");
 
-const Tenant = sequelize.define(
-  "Tenant",
+const Distributor = sequelize.define(
+  "Distributor",
   {
     id: {
       type: DataTypes.UUID,
@@ -14,11 +13,6 @@ const Tenant = sequelize.define(
       type: DataTypes.STRING(120),
       allowNull: false,
     },
-    distributorId: {
-      type: DataTypes.UUID,
-      allowNull: true,
-      field: "distributor_id",
-    },
     status: {
       type: DataTypes.STRING(24),
       allowNull: false,
@@ -26,10 +20,10 @@ const Tenant = sequelize.define(
     },
   },
   {
-    tableName: "tenants",
+    tableName: "distributors",
     timestamps: true,
-    indexes: [{ fields: ["name"] }, { fields: ["distributorId"] }],
+    indexes: [{ fields: ["name"] }],
   }
 );
 
-module.exports = Tenant;
+module.exports = Distributor;

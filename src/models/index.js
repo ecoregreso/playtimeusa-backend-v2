@@ -16,7 +16,6 @@ const SessionSnapshot = require("./SessionSnapshot");
 const GameConfig = require("./GameConfig");
 const ApiErrorEvent = require("./ApiErrorEvent");
 const SupportTicket = require("./SupportTicket");
-const SafetyTelemetryEvent = require("./SafetyTelemetryEvent");
 const PlayerSafetyLimit = require("./PlayerSafetyLimit");
 const PlayerSafetyAction = require("./PlayerSafetyAction");
 const StaffKey = require("./StaffKey");
@@ -25,10 +24,92 @@ const StaffPushDevice = require("./StaffPushDevice");
 const PurchaseOrder = require("./PurchaseOrder");
 const PurchaseOrderMessage = require("./PurchaseOrderMessage");
 const OwnerSetting = require("./OwnerSetting");
+const Tenant = require("./Tenant");
+const Distributor = require("./Distributor");
+const TenantWallet = require("./TenantWallet");
+const TenantVoucherPool = require("./TenantVoucherPool");
+const CreditLedger = require("./CreditLedger");
+
+Tenant.hasMany(User, { foreignKey: "tenantId" });
+User.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(StaffUser, { foreignKey: "tenantId" });
+StaffUser.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(Voucher, { foreignKey: "tenantId" });
+Voucher.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(Wallet, { foreignKey: "tenantId" });
+Wallet.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(Transaction, { foreignKey: "tenantId" });
+Transaction.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(GameRound, { foreignKey: "tenantId" });
+GameRound.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(Session, { foreignKey: "tenantId" });
+Session.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(DepositIntent, { foreignKey: "tenantId" });
+DepositIntent.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(WithdrawalIntent, { foreignKey: "tenantId" });
+WithdrawalIntent.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(LedgerEvent, { foreignKey: "tenantId" });
+LedgerEvent.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(SessionSnapshot, { foreignKey: "tenantId" });
+SessionSnapshot.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(GameConfig, { foreignKey: "tenantId" });
+GameConfig.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(ApiErrorEvent, { foreignKey: "tenantId" });
+ApiErrorEvent.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(SupportTicket, { foreignKey: "tenantId" });
+SupportTicket.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(PlayerSafetyLimit, { foreignKey: "tenantId" });
+PlayerSafetyLimit.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(PlayerSafetyAction, { foreignKey: "tenantId" });
+PlayerSafetyAction.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(StaffKey, { foreignKey: "tenantId" });
+StaffKey.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(StaffMessage, { foreignKey: "tenantId" });
+StaffMessage.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(StaffPushDevice, { foreignKey: "tenantId" });
+StaffPushDevice.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(PurchaseOrder, { foreignKey: "tenantId" });
+PurchaseOrder.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(PurchaseOrderMessage, { foreignKey: "tenantId" });
+PurchaseOrderMessage.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(TenantWallet, { foreignKey: "tenantId" });
+TenantWallet.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(TenantVoucherPool, { foreignKey: "tenantId" });
+TenantVoucherPool.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Tenant.hasMany(CreditLedger, { foreignKey: "tenantId" });
+CreditLedger.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Distributor.hasMany(Tenant, { foreignKey: "distributorId" });
+Tenant.belongsTo(Distributor, { foreignKey: "distributorId" });
 
 module.exports = {
   sequelize,
   Sequelize,
+  Tenant,
+  Distributor,
   User,
   Wallet,
   Transaction,
@@ -43,7 +124,6 @@ module.exports = {
   GameConfig,
   ApiErrorEvent,
   SupportTicket,
-  SafetyTelemetryEvent,
   PlayerSafetyLimit,
   PlayerSafetyAction,
   StaffKey,
@@ -52,4 +132,7 @@ module.exports = {
   PurchaseOrder,
   PurchaseOrderMessage,
   OwnerSetting,
+  TenantWallet,
+  TenantVoucherPool,
+  CreditLedger,
 };

@@ -4,7 +4,6 @@ const {
   LedgerEvent,
   SessionSnapshot,
   GameConfig,
-  ApiErrorEvent,
   SupportTicket,
   GameRound,
   Voucher,
@@ -846,8 +845,9 @@ async function getErrorMetrics(range) {
   const bucketExpr = buildBucketExpr("ts", range);
   const sql = `
     SELECT ${bucketExpr} AS t, COUNT(*) AS errors
-    FROM api_error_events
+    FROM ledger_events
     WHERE "ts" >= :startDate AND "ts" < :endDateExclusive
+      AND "eventType" = 'ERROR'
     GROUP BY t
     ORDER BY t ASC
   `;
@@ -886,8 +886,12 @@ async function getErrorMetrics(range) {
 
   const routesSql = `
     SELECT COALESCE(route, 'Unknown') AS route, COUNT(*) AS errors
-    FROM api_error_events
-    WHERE "ts" >= :startDate AND "ts" < :endDateExclusive
+    FROM (
+      SELECT meta->>'route' AS route
+      FROM ledger_events
+      WHERE "ts" >= :startDate AND "ts" < :endDateExclusive
+        AND "eventType" = 'ERROR'
+    ) AS error_events
     GROUP BY route
     ORDER BY errors DESC
     LIMIT 10

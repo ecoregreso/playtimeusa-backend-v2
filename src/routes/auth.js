@@ -11,6 +11,7 @@ const {
 } = require('../utils/jwt');
 const { requireAuth } = require('../middleware/auth');
 const { buildRequestMeta, recordLedgerEvent } = require("../services/ledgerService");
+const { initTenantContext } = require("../middleware/tenantContext");
 
 const router = express.Router();
 
@@ -31,42 +32,57 @@ function toPublicUser(user) {
  */
 router.post('/register', async (req, res) => {
   try {
-    const { email, username, password, role } = req.body;
+    const { email, username, password, role, tenantId } = req.body;
 
-    if (!email || !username || !password) {
-      return res.status(400).json({ error: 'email, username, and password are required' });
+    if (!email || !username || !password || !tenantId) {
+      return res
+        .status(400)
+        .json({ error: 'email, username, password, and tenantId are required' });
     }
 
-    const existingEmail = await User.findOne({ where: { email } });
-    if (existingEmail) {
-      return res.status(409).json({ error: 'Email already in use' });
-    }
-
-    const existingUsername = await User.findOne({ where: { username } });
-    if (existingUsername) {
-      return res.status(409).json({ error: 'Username already in use' });
-    }
-
-    const saltRounds = 10;
-    const passwordHash = await bcrypt.hash(password, saltRounds);
-
-    const newUser = await User.create({
-      email,
-      username,
-      passwordHash,
-      role: role || 'player',
-    });
-
-    const accessToken = signAccessToken(newUser);
-    const refreshToken = signRefreshToken(newUser);
-
-    return res.status(201).json({
-      user: toPublicUser(newUser),
-      tokens: {
-        accessToken,
-        refreshToken,
+    return await initTenantContext(
+      req,
+      res,
+      {
+        tenantId,
+        role: role || "player",
+        userId: null,
+        allowMissingTenant: false,
       },
-    });
+      async () => {
+        const existingEmail = await User.findOne({ where: { email } });
+        if (existingEmail) {
+          return res.status(409).json({ error: "Email already in use" });
+        }
+
+        const existingUsername = await User.findOne({ where: { username } });
+        if (existingUsername) {
+          return res.status(409).json({ error: "Username already in use" });
+        }
+
+        const saltRounds = 10;
+        const passwordHash = await bcrypt.hash(password, saltRounds);
+
+        const newUser = await User.create({
+          email,
+          username,
+          passwordHash,
+          tenantId,
+          role: role || "player",
+        });
+
+        const accessToken = signAccessToken(newUser);
+        const refreshToken = signRefreshToken(newUser);
+
+        return res.status(201).json({
+          user: toPublicUser(newUser),
+          tokens: {
+            accessToken,
+            refreshToken,
+          },
+        });
+      }
+    );
   } catch (err) {
     console.error('[AUTH] /auth/register error:', err);
     return res.status(500).json({ error: 'Internal server error' });
@@ -79,54 +95,70 @@ router.post('/register', async (req, res) => {
  */
 router.post('/login', async (req, res) => {
   try {
-    const { emailOrUsername, password } = req.body;
+    const { emailOrUsername, password, tenantId } = req.body;
 
-    if (!emailOrUsername || !password) {
-      return res.status(400).json({ error: 'emailOrUsername and password are required' });
+    if (!emailOrUsername || !password || !tenantId) {
+      return res
+        .status(400)
+        .json({ error: 'emailOrUsername, password, and tenantId are required' });
     }
 
-    const user = await User.findOne({
-      where: {
-        [Op.or]: [
-          { email: emailOrUsername },
-          { username: emailOrUsername },
-        ],
+    return await initTenantContext(
+      req,
+      res,
+      {
+        tenantId,
+        role: "player",
+        userId: null,
+        allowMissingTenant: false,
       },
-    });
+      async () => {
+        const user = await User.findOne({
+          where: {
+            [Op.or]: [
+              { email: emailOrUsername },
+              { username: emailOrUsername },
+            ],
+          },
+        });
 
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
+        if (!user) {
+          return res.status(401).json({ error: "Invalid credentials" });
+        }
 
-    if (!user.isActive) {
-      return res.status(403).json({ error: 'Account disabled' });
-    }
+        if (!user.isActive) {
+          return res.status(403).json({ error: "Account disabled" });
+        }
 
-    const match = await user.checkPassword(password);
-    if (!match) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
+        const match = await user.checkPassword(password);
+        if (!match) {
+          return res.status(401).json({ error: "Invalid credentials" });
+        }
 
-    const accessToken = signAccessToken(user);
-    const refreshToken = signRefreshToken(user);
+        const accessToken = signAccessToken(user);
+        const refreshToken = signRefreshToken(user);
 
-    if (user.role === "player") {
-      await recordLedgerEvent({
-        ts: new Date(),
-        playerId: user.id,
-        sessionId: null,
-        eventType: "LOGIN",
-        meta: buildRequestMeta(req, { source: "password_login" }),
-      });
-    }
+        if (user.role === "player") {
+          await recordLedgerEvent({
+            ts: new Date(),
+            playerId: user.id,
+            sessionId: null,
+            actionId: req.headers["x-session-id"] || null,
+            eventType: "LOGIN",
+            source: "auth.login",
+            meta: buildRequestMeta(req, { source: "password_login" }),
+          });
+        }
 
-    return res.json({
-      user: toPublicUser(user),
-      tokens: {
-        accessToken,
-        refreshToken,
-      },
-    });
+        return res.json({
+          user: toPublicUser(user),
+          tokens: {
+            accessToken,
+            refreshToken,
+          },
+        });
+      }
+    );
   } catch (err) {
     console.error('[AUTH] /auth/login error:', err);
     return res.status(500).json({ error: 'Internal server error' });
@@ -146,21 +178,33 @@ router.post('/refresh', async (req, res) => {
 
     const payload = verifyRefreshToken(refreshToken);
 
-    const user = await User.findByPk(payload.sub);
-    if (!user || !user.isActive) {
-      return res.status(401).json({ error: 'Invalid or inactive user' });
-    }
-
-    const newAccessToken = signAccessToken(user);
-    const newRefreshToken = signRefreshToken(user);
-
-    return res.json({
-      user: toPublicUser(user),
-      tokens: {
-        accessToken: newAccessToken,
-        refreshToken: newRefreshToken,
+    return await initTenantContext(
+      req,
+      res,
+      {
+        tenantId: payload.tenantId || null,
+        role: payload.role,
+        userId: payload.sub,
+        allowMissingTenant: false,
       },
-    });
+      async () => {
+        const user = await User.findByPk(payload.sub);
+        if (!user || !user.isActive) {
+          return res.status(401).json({ error: "Invalid or inactive user" });
+        }
+
+        const newAccessToken = signAccessToken(user);
+        const newRefreshToken = signRefreshToken(user);
+
+        return res.json({
+          user: toPublicUser(user),
+          tokens: {
+            accessToken: newAccessToken,
+            refreshToken: newRefreshToken,
+          },
+        });
+      }
+    );
   } catch (err) {
     console.error('[AUTH] /auth/refresh error:', err.message);
     return res.status(401).json({ error: 'Invalid or expired refresh token' });
@@ -172,40 +216,54 @@ router.post('/refresh', async (req, res) => {
  */
 router.post('/admin/login', async (req, res) => {
   try {
-    const { emailOrUsername, password } = req.body;
+    const { emailOrUsername, password, tenantId } = req.body;
 
-    if (!emailOrUsername || !password) {
-      return res.status(400).json({ error: 'emailOrUsername and password are required' });
+    if (!emailOrUsername || !password || !tenantId) {
+      return res
+        .status(400)
+        .json({ error: 'emailOrUsername, password, and tenantId are required' });
     }
 
-    const user = await User.findOne({
-      where: {
-        [Op.or]: [
-          { email: emailOrUsername },
-          { username: emailOrUsername },
-        ],
+    return await initTenantContext(
+      req,
+      res,
+      {
+        tenantId,
+        role: "admin",
+        userId: null,
+        allowMissingTenant: false,
       },
-    });
+      async () => {
+        const user = await User.findOne({
+          where: {
+            [Op.or]: [
+              { email: emailOrUsername },
+              { username: emailOrUsername },
+            ],
+          },
+        });
 
-    if (!user || user.role !== 'admin') {
-      return res.status(401).json({ error: 'Invalid admin credentials' });
-    }
+        if (!user || user.role !== "admin") {
+          return res.status(401).json({ error: "Invalid admin credentials" });
+        }
 
-    const match = await user.checkPassword(password);
-    if (!match) {
-      return res.status(401).json({ error: 'Invalid admin credentials' });
-    }
+        const match = await user.checkPassword(password);
+        if (!match) {
+          return res.status(401).json({ error: "Invalid admin credentials" });
+        }
 
-    const adminToken = signAdminToken(user);
-    const accessToken = signAccessToken(user);
+        const adminToken = signAdminToken(user);
+        const accessToken = signAccessToken(user);
 
-    return res.json({
-      user: toPublicUser(user),
-      tokens: {
-        adminToken,
-        accessToken,
-      },
-    });
+        return res.json({
+          user: toPublicUser(user),
+          tokens: {
+            adminToken,
+            accessToken,
+          },
+        });
+      }
+    );
   } catch (err) {
     console.error('[AUTH] /admin/login error:', err);
     return res.status(500).json({ error: 'Internal server error' });

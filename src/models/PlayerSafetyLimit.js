@@ -9,6 +9,11 @@ const PlayerSafetyLimit = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    tenantId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
+    },
     playerId: {
       type: DataTypes.UUID,
       allowNull: true,
@@ -30,7 +35,11 @@ const PlayerSafetyLimit = sequelize.define(
   {
     tableName: "player_safety_limits",
     timestamps: true,
-    indexes: [{ fields: ["sessionId"] }, { fields: ["playerId"] }],
+    indexes: [
+      { fields: ["tenantId"] },
+      { fields: ["sessionId"] },
+      { fields: ["playerId"] },
+    ],
   }
 );
 

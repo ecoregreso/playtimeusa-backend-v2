@@ -11,14 +11,18 @@ const StaffUser = sequelize.define(
       autoIncrement: true,
     },
     tenantId: {
-      type: DataTypes.STRING(64),
+      type: DataTypes.UUID,
       allowNull: true,
-      defaultValue: "default",
+      field: "tenant_id",
+    },
+    distributorId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: "distributor_id",
     },
     username: {
       type: DataTypes.STRING(64),
       allowNull: false,
-      unique: true,
     },
     email: {
       type: DataTypes.STRING(255),
@@ -64,7 +68,12 @@ const StaffUser = sequelize.define(
   {
     tableName: "staff_users",
     timestamps: true,
-    indexes: [{ fields: ["tenantId"] }, { fields: ["email"] }],
+    indexes: [
+      { fields: ["tenantId"] },
+      { fields: ["distributorId"] },
+      { fields: ["tenantId", "username"], unique: true },
+      { fields: ["email"] },
+    ],
   }
 );
 

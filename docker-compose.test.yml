@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: playtime
+      POSTGRES_PASSWORD: playtime
+      POSTGRES_DB: playtime_test
+    ports:
+      - "5434:5432"

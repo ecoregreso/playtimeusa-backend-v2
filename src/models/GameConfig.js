@@ -9,10 +9,14 @@ const GameConfig = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    tenantId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: "tenant_id",
+    },
     gameKey: {
       type: DataTypes.STRING(64),
       allowNull: false,
-      unique: true,
     },
     provider: {
       type: DataTypes.STRING(64),
@@ -30,7 +34,11 @@ const GameConfig = sequelize.define(
   {
     tableName: "game_configs",
     timestamps: true,
-    indexes: [{ fields: ["gameKey"] }, { fields: ["provider"] }],
+    indexes: [
+      { fields: ["tenantId"] },
+      { fields: ["tenantId", "gameKey"], unique: true },
+      { fields: ["provider"] },
+    ],
   }
 );
 
