@@ -23,7 +23,7 @@ async function setLocal(transaction, key, value) {
     throw new Error(`Unsupported SET LOCAL key: ${key}`);
   }
   if (value == null || value === "") {
-    await sequelize.query(`SET LOCAL ${key} = NULL`, { transaction });
+    await sequelize.query(`RESET ${key}`, { transaction });
     return;
   }
   await sequelize.query(`SET LOCAL ${key} = :value`, {
