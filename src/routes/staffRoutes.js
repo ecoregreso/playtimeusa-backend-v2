@@ -105,7 +105,7 @@ router.post(
       }
 
       const normalizedRole = role || 'cashier';
-      const allowedRoles = ['cashier', 'agent', 'operator', 'owner'];
+      const allowedRoles = ['cashier', 'agent', 'operator', 'distributor', 'owner'];
       if (!allowedRoles.includes(normalizedRole)) {
         return res.status(400).json({ error: 'Invalid role' });
       }
@@ -147,4 +147,3 @@ router.post(
 );
 
 module.exports = router;
-

@@ -33,7 +33,7 @@ const StaffUser = sequelize.define(
       allowNull: false,
     },
     role: {
-      type: DataTypes.ENUM("cashier", "agent", "operator", "owner"),
+      type: DataTypes.ENUM("cashier", "agent", "operator", "distributor", "owner"),
       allowNull: false,
       defaultValue: "cashier",
     },

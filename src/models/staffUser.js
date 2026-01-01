@@ -18,8 +18,9 @@ const StaffUser = sequelize.define(
       // cashier: vouchers + read-only history
       // agent: manages cashiers, sees their players
       // operator: full platform admin (except owners)
+      // distributor: distributor operator account
       // owner: you, god mode
-      type: DataTypes.ENUM('cashier', 'agent', 'operator', 'owner'),
+      type: DataTypes.ENUM('cashier', 'agent', 'operator', 'distributor', 'owner'),
       allowNull: false,
       defaultValue: 'cashier',
     },

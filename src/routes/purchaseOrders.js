@@ -49,7 +49,7 @@ function resolveTenantIdForOwner(req) {
 
 function canPlaceOrder(staff) {
   if (!staff) return false;
-  return staff.role === "agent" || !!staff.distributorId;
+  return staff.role === "agent" || staff.role === "distributor";
 }
 
 async function getOwnerAddress(tenantId) {

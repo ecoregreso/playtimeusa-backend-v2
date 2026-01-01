@@ -7,7 +7,7 @@ const { sendPushToStaffIds } = require("../utils/push");
 
 const router = express.Router();
 
-const ALLOWED_ROLES = new Set(["owner", "agent", "operator"]);
+const ALLOWED_ROLES = new Set(["owner", "agent", "operator", "distributor"]);
 
 function requirePushRole(req, res, next) {
   if (!ALLOWED_ROLES.has(req.staff?.role)) {

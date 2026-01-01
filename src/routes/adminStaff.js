@@ -11,7 +11,7 @@ const { PERMISSIONS } = require("../constants/permissions");
 
 const router = express.Router();
 
-const ALLOWED_ROLES = ["cashier", "agent", "operator", "owner"];
+const ALLOWED_ROLES = ["cashier", "agent", "operator", "distributor", "owner"];
 
 router.use(staffAuth);
 
