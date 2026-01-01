@@ -27,7 +27,7 @@ BEGIN
       EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS tenant_id UUID', table_name);
       EXECUTE format('UPDATE %I SET tenant_id = $1 WHERE tenant_id IS NULL', table_name) USING default_tenant;
       EXECUTE format(
-        'ALTER TABLE %I ALTER COLUMN tenant_id SET DEFAULT (current_setting(''app.tenant_id'', true))::uuid',
+        'ALTER TABLE %I ALTER COLUMN tenant_id SET DEFAULT NULLIF(current_setting(''app.tenant_id'', true), '''')::uuid',
         table_name
       );
       EXECUTE format('ALTER TABLE %I ALTER COLUMN tenant_id SET NOT NULL', table_name);
@@ -62,7 +62,7 @@ BEGIN
       EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', tbl);
       EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', tbl);
       EXECUTE format(
-        'CREATE POLICY tenant_isolation ON %I USING (tenant_id = current_setting(''app.tenant_id'', true)::uuid) WITH CHECK (tenant_id = current_setting(''app.tenant_id'', true)::uuid)',
+        'CREATE POLICY tenant_isolation ON %I USING (tenant_id = NULLIF(current_setting(''app.tenant_id'', true), '''')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting(''app.tenant_id'', true), '''')::uuid)',
         tbl
       );
       EXECUTE format('DROP POLICY IF EXISTS owner_override ON %I', tbl);

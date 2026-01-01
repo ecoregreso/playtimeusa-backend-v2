@@ -24,7 +24,7 @@ CREATE INDEX IF NOT EXISTS audit_events_created_idx ON audit_events ("createdAt"
 CREATE INDEX IF NOT EXISTS audit_events_request_idx ON audit_events ("requestId");
 
 ALTER TABLE audit_events
-  ALTER COLUMN tenant_id SET DEFAULT (current_setting('app.tenant_id', true))::uuid;
+  ALTER COLUMN tenant_id SET DEFAULT NULLIF(current_setting('app.tenant_id', true), '')::uuid;
 
 ALTER TABLE audit_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_events FORCE ROW LEVEL SECURITY;
@@ -32,12 +32,12 @@ ALTER TABLE audit_events FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS audit_events_tenant_isolation ON audit_events;
 CREATE POLICY audit_events_tenant_isolation ON audit_events
   USING (
-    tenant_id = current_setting('app.tenant_id', true)::uuid
-    OR (tenant_id IS NULL AND current_setting('app.tenant_id', true) IS NULL)
+    tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid
+    OR (tenant_id IS NULL AND NULLIF(current_setting('app.tenant_id', true), '') IS NULL)
     OR current_setting('app.role', true) = 'owner'
   )
   WITH CHECK (
-    tenant_id = current_setting('app.tenant_id', true)::uuid
-    OR (tenant_id IS NULL AND current_setting('app.tenant_id', true) IS NULL)
+    tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid
+    OR (tenant_id IS NULL AND NULLIF(current_setting('app.tenant_id', true), '') IS NULL)
     OR current_setting('app.role', true) = 'owner'
   );

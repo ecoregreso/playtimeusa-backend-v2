@@ -59,6 +59,7 @@ CREATE INDEX IF NOT EXISTS credit_ledger_action_idx ON credit_ledger (action_typ
 DO $$
 DECLARE
   default_tenant UUID;
+  table_name TEXT;
 BEGIN
   SELECT id INTO default_tenant FROM tenants WHERE name = 'Default' LIMIT 1;
   IF default_tenant IS NULL THEN
@@ -125,20 +126,20 @@ DECLARE
   r RECORD;
 BEGIN
   FOR r IN
-    SELECT c.conname
+    SELECT c.conname, c.conrelid, c.conkey
     FROM pg_constraint c
     JOIN pg_class t ON t.oid = c.conrelid
     WHERE t.relname = 'users' AND c.contype = 'u'
   LOOP
     IF EXISTS (
       SELECT 1 FROM pg_attribute a
-      WHERE a.attrelid = c.conrelid
-        AND a.attnum = ANY (c.conkey)
+      WHERE a.attrelid = r.conrelid
+        AND a.attnum = ANY (r.conkey)
         AND a.attname IN ('email', 'username')
     ) AND NOT EXISTS (
       SELECT 1 FROM pg_attribute a
-      WHERE a.attrelid = c.conrelid
-        AND a.attnum = ANY (c.conkey)
+      WHERE a.attrelid = r.conrelid
+        AND a.attnum = ANY (r.conkey)
         AND a.attname = 'tenant_id'
     ) THEN
       EXECUTE format('ALTER TABLE users DROP CONSTRAINT IF EXISTS %I', r.conname);
@@ -146,20 +147,20 @@ BEGIN
   END LOOP;
 
   FOR r IN
-    SELECT c.conname
+    SELECT c.conname, c.conrelid, c.conkey
     FROM pg_constraint c
     JOIN pg_class t ON t.oid = c.conrelid
     WHERE t.relname = 'vouchers' AND c.contype = 'u'
   LOOP
     IF EXISTS (
       SELECT 1 FROM pg_attribute a
-      WHERE a.attrelid = c.conrelid
-        AND a.attnum = ANY (c.conkey)
+      WHERE a.attrelid = r.conrelid
+        AND a.attnum = ANY (r.conkey)
         AND a.attname = 'code'
     ) AND NOT EXISTS (
       SELECT 1 FROM pg_attribute a
-      WHERE a.attrelid = c.conrelid
-        AND a.attnum = ANY (c.conkey)
+      WHERE a.attrelid = r.conrelid
+        AND a.attnum = ANY (r.conkey)
         AND a.attname = 'tenant_id'
     ) THEN
       EXECUTE format('ALTER TABLE vouchers DROP CONSTRAINT IF EXISTS %I', r.conname);
@@ -167,20 +168,20 @@ BEGIN
   END LOOP;
 
   FOR r IN
-    SELECT c.conname
+    SELECT c.conname, c.conrelid, c.conkey
     FROM pg_constraint c
     JOIN pg_class t ON t.oid = c.conrelid
     WHERE t.relname = 'staff_users' AND c.contype = 'u'
   LOOP
     IF EXISTS (
       SELECT 1 FROM pg_attribute a
-      WHERE a.attrelid = c.conrelid
-        AND a.attnum = ANY (c.conkey)
+      WHERE a.attrelid = r.conrelid
+        AND a.attnum = ANY (r.conkey)
         AND a.attname = 'username'
     ) AND NOT EXISTS (
       SELECT 1 FROM pg_attribute a
-      WHERE a.attrelid = c.conrelid
-        AND a.attnum = ANY (c.conkey)
+      WHERE a.attrelid = r.conrelid
+        AND a.attnum = ANY (r.conkey)
         AND a.attname = 'tenant_id'
     ) THEN
       EXECUTE format('ALTER TABLE staff_users DROP CONSTRAINT IF EXISTS %I', r.conname);
@@ -188,20 +189,20 @@ BEGIN
   END LOOP;
 
   FOR r IN
-    SELECT c.conname
+    SELECT c.conname, c.conrelid, c.conkey
     FROM pg_constraint c
     JOIN pg_class t ON t.oid = c.conrelid
     WHERE t.relname = 'game_configs' AND c.contype = 'u'
   LOOP
     IF EXISTS (
       SELECT 1 FROM pg_attribute a
-      WHERE a.attrelid = c.conrelid
-        AND a.attnum = ANY (c.conkey)
+      WHERE a.attrelid = r.conrelid
+        AND a.attnum = ANY (r.conkey)
         AND a.attname = 'gameKey'
     ) AND NOT EXISTS (
       SELECT 1 FROM pg_attribute a
-      WHERE a.attrelid = c.conrelid
-        AND a.attnum = ANY (c.conkey)
+      WHERE a.attrelid = r.conrelid
+        AND a.attnum = ANY (r.conkey)
         AND a.attname = 'tenant_id'
     ) THEN
       EXECUTE format('ALTER TABLE game_configs DROP CONSTRAINT IF EXISTS %I', r.conname);
@@ -209,20 +210,20 @@ BEGIN
   END LOOP;
 
   FOR r IN
-    SELECT c.conname
+    SELECT c.conname, c.conrelid, c.conkey
     FROM pg_constraint c
     JOIN pg_class t ON t.oid = c.conrelid
     WHERE t.relname = 'ledger_events' AND c.contype = 'u'
   LOOP
     IF EXISTS (
       SELECT 1 FROM pg_attribute a
-      WHERE a.attrelid = c.conrelid
-        AND a.attnum = ANY (c.conkey)
+      WHERE a.attrelid = r.conrelid
+        AND a.attnum = ANY (r.conkey)
         AND a.attname IN ('actionId', 'eventType')
     ) AND NOT EXISTS (
       SELECT 1 FROM pg_attribute a
-      WHERE a.attrelid = c.conrelid
-        AND a.attnum = ANY (c.conkey)
+      WHERE a.attrelid = r.conrelid
+        AND a.attnum = ANY (r.conkey)
         AND a.attname = 'tenant_id'
     ) THEN
       EXECUTE format('ALTER TABLE ledger_events DROP CONSTRAINT IF EXISTS %I', r.conname);
@@ -272,7 +273,7 @@ BEGIN
       EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', tbl);
       EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', tbl);
       EXECUTE format(
-        'CREATE POLICY tenant_isolation ON %I USING (tenant_id = current_setting(''app.tenant_id'', true)::uuid) WITH CHECK (tenant_id = current_setting(''app.tenant_id'', true)::uuid)',
+        'CREATE POLICY tenant_isolation ON %I USING (tenant_id = NULLIF(current_setting(''app.tenant_id'', true), '''')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting(''app.tenant_id'', true), '''')::uuid)',
         tbl
       );
       EXECUTE format('DROP POLICY IF EXISTS owner_override ON %I', tbl);
