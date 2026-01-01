@@ -45,7 +45,6 @@ router.post("/login", async (req, res) => {
             : {
                 username,
                 role: "owner",
-                tenantId: null,
               },
         });
         if (!staff || !staff.isActive) {
