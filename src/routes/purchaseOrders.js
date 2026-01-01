@@ -34,6 +34,19 @@ function threadIdForPair(a, b) {
   return `thread:${minId}:${maxId}`;
 }
 
+function normalizeTenantId(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  return trimmed || null;
+}
+
+function resolveTenantIdForOwner(req) {
+  if (req.staff?.role !== "owner") {
+    return req.staff?.tenantId || null;
+  }
+  return normalizeTenantId(req.query?.tenantId || req.body?.tenantId);
+}
+
 async function getOwnerAddress(tenantId) {
   const row = await OwnerSetting.findByPk(ownerKey(tenantId));
   return row?.value || "";
@@ -100,7 +113,11 @@ router.get(
   requirePermission(PERMISSIONS.FINANCE_READ),
   async (req, res) => {
     try {
-      const addr = await getOwnerAddress(req.staff?.tenantId);
+      const tenantId = resolveTenantIdForOwner(req);
+      if (!tenantId) {
+        return res.status(400).json({ ok: false, error: "tenantId is required" });
+      }
+      const addr = await getOwnerAddress(tenantId);
       res.json({ ok: true, ownerBtcAddress: addr });
     } catch (err) {
       console.error("[PO] owner addr get error:", err);
@@ -117,8 +134,12 @@ router.post(
   async (req, res) => {
     try {
       const addr = (req.body?.ownerBtcAddress || "").trim();
+      const tenantId = resolveTenantIdForOwner(req);
+      if (!tenantId) {
+        return res.status(400).json({ ok: false, error: "tenantId is required" });
+      }
       await OwnerSetting.upsert({
-        key: ownerKey(req.staff?.tenantId),
+        key: ownerKey(tenantId),
         value: addr,
       });
       res.json({ ok: true, ownerBtcAddress: addr });
@@ -213,13 +234,22 @@ router.get(
   requirePermission(PERMISSIONS.FINANCE_READ),
   async (req, res) => {
     try {
-      const isOwner = (req.staff?.permissions || []).includes(PERMISSIONS.FINANCE_WRITE);
-      const where = isOwner
-        ? { tenantId: req.staff?.tenantId }
-        : {
-            tenantId: req.staff?.tenantId,
-            requestedById: req.staff?.id || -1,
-          };
+      const perms = req.staff?.permissions || [];
+      const isOwnerRole = req.staff?.role === "owner";
+      const isManager = perms.includes(PERMISSIONS.FINANCE_WRITE);
+      const tenantId = isOwnerRole ? normalizeTenantId(req.query?.tenantId) : req.staff?.tenantId;
+
+      let where = {};
+      if (isOwnerRole) {
+        if (tenantId) where.tenantId = tenantId;
+      } else if (isManager) {
+        where = { tenantId: req.staff?.tenantId };
+      } else {
+        where = {
+          tenantId: req.staff?.tenantId,
+          requestedById: req.staff?.id || -1,
+        };
+      }
 
       const orders = await PurchaseOrder.findAll({
         where,
@@ -253,7 +283,7 @@ router.get(
         return res.status(403).json({ ok: false, error: "Forbidden" });
       }
       const messages = await PurchaseOrderMessage.findAll({
-        where: { orderId: order.id, tenantId: req.staff?.tenantId },
+        where: { orderId: order.id, tenantId: order?.tenantId || req.staff?.tenantId },
         order: [["createdAt", "ASC"]],
       });
       res.json({ ok: true, messages });
@@ -284,7 +314,7 @@ router.post(
         sender: req.staff?.username || "staff",
         senderRole: req.staff?.role || "staff",
         body,
-        tenantId: req.staff?.tenantId,
+        tenantId: order?.tenantId || req.staff?.tenantId,
       });
 
       res.status(201).json({ ok: true, message: msg });
@@ -309,7 +339,7 @@ router.post(
       }
 
       const ownerBtcAddress =
-        (req.body?.ownerBtcAddress || "").trim() || (await getOwnerAddress(req.staff?.tenantId));
+        (req.body?.ownerBtcAddress || "").trim() || (await getOwnerAddress(order.tenantId));
       if (!ownerBtcAddress) {
         return res.status(400).json({ ok: false, error: "Wallet address required" });
       }
@@ -327,11 +357,11 @@ router.post(
         sender: req.staff?.username || "owner",
         senderRole: req.staff?.role || "owner",
         body: message,
-        tenantId: req.staff?.tenantId,
+        tenantId: order.tenantId,
       });
 
       await notifyOrderStatusByEmail({
-        tenantId: req.staff?.tenantId,
+        tenantId: order.tenantId,
         order,
       });
 
@@ -380,11 +410,11 @@ router.post(
         sender: req.staff?.username || "agent",
         senderRole: req.staff?.role || "agent",
         body,
-        tenantId: req.staff?.tenantId,
+        tenantId: order.tenantId,
       });
 
       await notifyOrderStatusByEmail({
-        tenantId: req.staff?.tenantId,
+        tenantId: order.tenantId,
         order,
       });
 
@@ -422,11 +452,11 @@ router.post(
         sender: req.staff?.username || "owner",
         senderRole: req.staff?.role || "owner",
         body,
-        tenantId: req.staff?.tenantId,
+        tenantId: order.tenantId,
       });
 
       await notifyOrderStatusByEmail({
-        tenantId: req.staff?.tenantId,
+        tenantId: order.tenantId,
         order,
       });
 
@@ -469,11 +499,11 @@ router.post(
         sender: req.staff?.username || "agent",
         senderRole: req.staff?.role || "agent",
         body,
-        tenantId: req.staff?.tenantId,
+        tenantId: order.tenantId,
       });
 
       await notifyOrderStatusByEmail({
-        tenantId: req.staff?.tenantId,
+        tenantId: order.tenantId,
         order,
       });
 

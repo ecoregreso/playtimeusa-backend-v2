@@ -67,7 +67,14 @@ router.post("/brand", staffAuth, requireOwner, async (req, res) => {
 
 router.get("/tenants", staffAuth, requireOwner, async (req, res) => {
   try {
-    const tenants = await Tenant.findAll({ order: [["createdAt", "DESC"]] });
+    const tenants = await Tenant.findAll({
+      order: [["createdAt", "DESC"]],
+      include: [
+        { model: TenantWallet, attributes: ["balanceCents", "currency"] },
+        { model: TenantVoucherPool, attributes: ["poolBalanceCents", "currency"] },
+        { model: Distributor, attributes: ["id", "name", "status"] },
+      ],
+    });
     res.json({ ok: true, tenants });
   } catch (err) {
     console.error("[OWNER] list tenants error:", err);
