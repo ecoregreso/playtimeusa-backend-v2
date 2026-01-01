@@ -6,6 +6,7 @@ const {
   TenantWallet,
   TenantVoucherPool,
   CreditLedger,
+  OwnerSetting,
 } = require("../models");
 const { staffAuth } = require("../middleware/staffAuth");
 
@@ -17,6 +18,52 @@ function requireOwner(req, res, next) {
   }
   return next();
 }
+
+const parseBrandPayload = (payload) => {
+  if (!payload) return null;
+  if (typeof payload === "string") {
+    try {
+      return JSON.parse(payload);
+    } catch (err) {
+      return null;
+    }
+  }
+  if (typeof payload === "object") {
+    return payload;
+  }
+  return null;
+};
+
+router.get("/brand", staffAuth, requireOwner, async (req, res) => {
+  try {
+    const row = await OwnerSetting.findByPk("brand");
+    if (!row?.value) {
+      return res.json({ ok: true, brand: null });
+    }
+    const parsed = parseBrandPayload(row.value);
+    res.json({ ok: true, brand: parsed });
+  } catch (err) {
+    console.error("[OWNER] get brand error:", err);
+    res.status(500).json({ ok: false, error: "Failed to load brand" });
+  }
+});
+
+router.post("/brand", staffAuth, requireOwner, async (req, res) => {
+  try {
+    const incoming = req.body?.brand ?? req.body;
+    const parsed = parseBrandPayload(incoming);
+    if (!parsed || typeof parsed !== "object") {
+      return res.status(400).json({ ok: false, error: "brand payload is invalid" });
+    }
+
+    const value = JSON.stringify(parsed);
+    await OwnerSetting.upsert({ key: "brand", value });
+    res.json({ ok: true, brand: parsed });
+  } catch (err) {
+    console.error("[OWNER] update brand error:", err);
+    res.status(500).json({ ok: false, error: "Failed to update brand" });
+  }
+});
 
 router.get("/tenants", staffAuth, requireOwner, async (req, res) => {
   try {
