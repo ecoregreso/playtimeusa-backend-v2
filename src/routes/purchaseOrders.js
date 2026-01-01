@@ -47,6 +47,11 @@ function resolveTenantIdForOwner(req) {
   return normalizeTenantId(req.query?.tenantId || req.body?.tenantId);
 }
 
+function canPlaceOrder(staff) {
+  if (!staff) return false;
+  return staff.role === "agent" || !!staff.distributorId;
+}
+
 async function getOwnerAddress(tenantId) {
   const row = await OwnerSetting.findByPk(ownerKey(tenantId));
   return row?.value || "";
@@ -157,6 +162,9 @@ router.post(
   requirePermission(PERMISSIONS.FINANCE_READ),
   async (req, res) => {
     try {
+      if (!canPlaceOrder(req.staff)) {
+        return res.status(403).json({ ok: false, error: "Only agents or distributors can place orders" });
+      }
       const { funAmount, btcAmount, btcRate, note } = req.body || {};
 
       const fun = Number(funAmount);
