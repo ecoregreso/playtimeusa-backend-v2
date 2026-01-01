@@ -49,6 +49,32 @@ const crypto = require("crypto");
 
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
+
+const parseBrandValue = (value) => {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch (err) {
+    if (NODE_ENV !== "test") {
+      console.warn("[BRAND] invalid JSON value");
+    }
+    return null;
+  }
+};
+
+const resolveBrand = async () => {
+  const fromEnv = parseBrandValue(process.env.BRAND_JSON);
+  if (fromEnv) return fromEnv;
+  try {
+    const row = await OwnerSetting.findByPk("brand");
+    return parseBrandValue(row?.value);
+  } catch (err) {
+    if (NODE_ENV !== "test") {
+      console.warn("[BRAND] lookup failed:", err.message || err);
+    }
+    return null;
+  }
+};
 /**
  * CORS origin list
  * - FRONTEND_ORIGIN supports comma-separated origins
@@ -240,6 +266,16 @@ app.get("/health", (req, res) => {
     env: NODE_ENV,
     time: new Date().toISOString(),
   });
+});
+
+app.get("/public/brand", async (req, res) => {
+  const brand = await resolveBrand();
+  res.json({ brand: brand || null });
+});
+
+app.get("/api/v1/public/brand", async (req, res) => {
+  const brand = await resolveBrand();
+  res.json({ brand: brand || null });
 });
 
 // Routes
