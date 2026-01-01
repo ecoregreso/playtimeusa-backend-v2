@@ -11,6 +11,20 @@ const analytics = require("../services/analyticsService");
 
 const router = express.Router();
 
+function isMissingTableError(err) {
+  const code = err?.original?.code || err?.parent?.code;
+  return code === "42P01";
+}
+
+async function safeFindAll(model, options) {
+  try {
+    return await model.findAll(options);
+  } catch (err) {
+    if (isMissingTableError(err)) return [];
+    throw err;
+  }
+}
+
 // GET /api/v1/admin/audit
 router.get(
   "/",
@@ -21,16 +35,16 @@ router.get(
       const limit = Math.min(parseInt(req.query.limit || "120", 10), 500);
 
       const [tx, vouchers, rounds] = await Promise.all([
-        Transaction.findAll({
+        safeFindAll(Transaction, {
           order: [["createdAt", "DESC"]],
           limit,
           include: [{ model: Wallet, as: "wallet" }],
         }),
-        Voucher.findAll({
+        safeFindAll(Voucher, {
           order: [["createdAt", "DESC"]],
           limit,
         }),
-        GameRound.findAll({
+        safeFindAll(GameRound, {
           order: [["createdAt", "DESC"]],
           limit,
         }),

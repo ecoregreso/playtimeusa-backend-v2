@@ -24,6 +24,21 @@ const FAILED_BET_STALE_MINUTES = 10;
 const ACTIVE_EVENT_TYPES = ["BET", "SPIN"];
 const BET_EVENT_TYPES = ["BET"];
 const WIN_EVENT_TYPES = ["WIN"];
+const TABLE_EXISTS_CACHE = new Map();
+
+async function tableExists(tableName) {
+  const key = `public.${tableName}`;
+  if (TABLE_EXISTS_CACHE.has(key)) return TABLE_EXISTS_CACHE.get(key);
+  const promise = sequelize
+    .query("SELECT to_regclass(:tableName) AS name", {
+      replacements: { tableName: key },
+      type: QueryTypes.SELECT,
+    })
+    .then((rows) => Boolean(rows?.[0]?.name))
+    .catch(() => false);
+  TABLE_EXISTS_CACHE.set(key, promise);
+  return promise;
+}
 
 function parseDateInput(value) {
   if (!value) return null;
@@ -843,6 +858,11 @@ async function getSpinVolume(range, filters) {
 
 async function getErrorMetrics(range) {
   const bucketExpr = buildBucketExpr("ts", range);
+  const hasLedger = await tableExists("ledger_events");
+  if (!hasLedger) {
+    return { series: [], staleMinutes: FAILED_BET_STALE_MINUTES, topRoutes: [] };
+  }
+
   const sql = `
     SELECT ${bucketExpr} AS t, COUNT(*) AS errors
     FROM ledger_events
@@ -862,8 +882,9 @@ async function getErrorMetrics(range) {
   const now = new Date();
   const rangeEnd = range.endDateExclusive < now ? range.endDateExclusive : now;
   const staleCutoff = new Date(rangeEnd.getTime() - FAILED_BET_STALE_MINUTES * 60000);
+  const hasGameRounds = await tableExists("game_rounds");
   const failedRows =
-    staleCutoff > range.startDate
+    hasGameRounds && staleCutoff > range.startDate
       ? await sequelize.query(
           `
           SELECT ${bucketExpr} AS t, COUNT(*) AS "failedBets"
@@ -927,6 +948,11 @@ async function getErrorMetrics(range) {
 }
 
 async function getCashierPerformance(range) {
+  const hasVouchers = await tableExists("vouchers");
+  if (!hasVouchers) {
+    return { series: [], totals: { issued: 0, redeemed: 0, expired: 0 } };
+  }
+
   const bucketExpr = buildBucketExpr("createdAt", range);
   const issuedSql = `
     SELECT ${bucketExpr} AS t, COUNT(*) AS count
@@ -1014,34 +1040,43 @@ function summarizeDistribution(values) {
 }
 
 async function getResolutionTimes(range) {
-  const tickets = await SupportTicket.findAll({
-    where: {
-      createdAt: { [Op.gte]: range.startDate, [Op.lt]: range.endDateExclusive },
-      resolvedAt: { [Op.not]: null },
-    },
-    attributes: ["createdAt", "resolvedAt", "assignedStaffId"],
-  });
+  const hasSupport = await tableExists("support_tickets");
+  const tickets = hasSupport
+    ? await SupportTicket.findAll({
+        where: {
+          createdAt: { [Op.gte]: range.startDate, [Op.lt]: range.endDateExclusive },
+          resolvedAt: { [Op.not]: null },
+        },
+        attributes: ["createdAt", "resolvedAt", "assignedStaffId"],
+      })
+    : [];
   const supportDurations = tickets.map((ticket) => {
     const created = new Date(ticket.createdAt);
     const resolved = new Date(ticket.resolvedAt);
     return Math.max(0, (resolved - created) / 60000);
   });
 
+  const hasDeposits = await tableExists("deposit_intents");
+  const hasWithdrawals = await tableExists("withdrawal_intents");
   const [deposits, withdrawals] = await Promise.all([
-    DepositIntent.findAll({
-      where: {
-        createdAt: { [Op.gte]: range.startDate, [Op.lt]: range.endDateExclusive },
-        creditedAt: { [Op.not]: null },
-      },
-      attributes: ["createdAt", "creditedAt", "metadata"],
-    }),
-    WithdrawalIntent.findAll({
-      where: {
-        createdAt: { [Op.gte]: range.startDate, [Op.lt]: range.endDateExclusive },
-        sentAt: { [Op.not]: null },
-      },
-      attributes: ["createdAt", "sentAt", "metadata"],
-    }),
+    hasDeposits
+      ? DepositIntent.findAll({
+          where: {
+            createdAt: { [Op.gte]: range.startDate, [Op.lt]: range.endDateExclusive },
+            creditedAt: { [Op.not]: null },
+          },
+          attributes: ["createdAt", "creditedAt", "metadata"],
+        })
+      : Promise.resolve([]),
+    hasWithdrawals
+      ? WithdrawalIntent.findAll({
+          where: {
+            createdAt: { [Op.gte]: range.startDate, [Op.lt]: range.endDateExclusive },
+            sentAt: { [Op.not]: null },
+          },
+          attributes: ["createdAt", "sentAt", "metadata"],
+        })
+      : Promise.resolve([]),
   ]);
 
   const staffIds = new Set();
