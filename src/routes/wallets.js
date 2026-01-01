@@ -2,6 +2,7 @@ const express = require('express');
 const { sequelize } = require('../db');
 const { User, Wallet, Transaction } = require('../models');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { logEvent } = require("../services/auditService");
 
 const router = express.Router();
 
@@ -63,12 +64,44 @@ router.post('/:userId/credit',
       const numericAmount = parseFloat(amount);
       if (!numericAmount || numericAmount <= 0) {
         await t.rollback();
+        await logEvent({
+          eventType: "WALLET_ADJUST",
+          success: false,
+          tenantId: req.auth?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "user",
+          actorId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          actorUsername: req.user?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 400,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "invalid_amount", direction: "credit", amount },
+        });
         return res.status(400).json({ error: 'amount must be > 0' });
       }
 
       const user = await User.findByPk(userId, { transaction: t });
       if (!user) {
         await t.rollback();
+        await logEvent({
+          eventType: "WALLET_ADJUST",
+          success: false,
+          tenantId: req.auth?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "user",
+          actorId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          actorUsername: req.user?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 404,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "user_not_found", direction: "credit", targetUserId: userId },
+        });
         return res.status(404).json({ error: 'User not found' });
       }
 
@@ -94,6 +127,30 @@ router.post('/:userId/credit',
 
       await t.commit();
 
+      await logEvent({
+        eventType: "WALLET_ADJUST",
+        success: true,
+        tenantId: req.auth?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "user",
+        actorId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        actorUsername: req.user?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 201,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: {
+          direction: "credit",
+          amount: numericAmount,
+          type,
+          reference,
+          targetUserId: userId,
+          transactionId: tx?.id || null,
+        },
+      });
+
       return res.status(201).json({
         wallet,
         transaction: tx,
@@ -101,6 +158,22 @@ router.post('/:userId/credit',
     } catch (err) {
       console.error('[WALLET] POST /wallets/:userId/credit error:', err);
       await t.rollback();
+      await logEvent({
+        eventType: "WALLET_ADJUST",
+        success: false,
+        tenantId: req.auth?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "user",
+        actorId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        actorUsername: req.user?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 500,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: { reason: "exception", direction: "credit", message: err.message },
+      });
       return res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -118,12 +191,44 @@ router.post('/:userId/debit',
       const numericAmount = parseFloat(amount);
       if (!numericAmount || numericAmount <= 0) {
         await t.rollback();
+        await logEvent({
+          eventType: "WALLET_ADJUST",
+          success: false,
+          tenantId: req.auth?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "user",
+          actorId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          actorUsername: req.user?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 400,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "invalid_amount", direction: "debit", amount },
+        });
         return res.status(400).json({ error: 'amount must be > 0' });
       }
 
       const user = await User.findByPk(userId, { transaction: t });
       if (!user) {
         await t.rollback();
+        await logEvent({
+          eventType: "WALLET_ADJUST",
+          success: false,
+          tenantId: req.auth?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "user",
+          actorId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          actorUsername: req.user?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 404,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "user_not_found", direction: "debit", targetUserId: userId },
+        });
         return res.status(404).json({ error: 'User not found' });
       }
 
@@ -132,6 +237,22 @@ router.post('/:userId/debit',
       const balanceBefore = parseFloat(wallet.balance);
       if (balanceBefore < numericAmount) {
         await t.rollback();
+        await logEvent({
+          eventType: "WALLET_ADJUST",
+          success: false,
+          tenantId: req.auth?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "user",
+          actorId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          actorUsername: req.user?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 400,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "insufficient_funds", direction: "debit", amount: numericAmount },
+        });
         return res.status(400).json({ error: 'Insufficient funds' });
       }
 
@@ -154,6 +275,30 @@ router.post('/:userId/debit',
 
       await t.commit();
 
+      await logEvent({
+        eventType: "WALLET_ADJUST",
+        success: true,
+        tenantId: req.auth?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "user",
+        actorId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        actorUsername: req.user?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 201,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: {
+          direction: "debit",
+          amount: numericAmount,
+          type,
+          reference,
+          targetUserId: userId,
+          transactionId: tx?.id || null,
+        },
+      });
+
       return res.status(201).json({
         wallet,
         transaction: tx,
@@ -161,6 +306,22 @@ router.post('/:userId/debit',
     } catch (err) {
       console.error('[WALLET] POST /wallets/:userId/debit error:', err);
       await t.rollback();
+      await logEvent({
+        eventType: "WALLET_ADJUST",
+        success: false,
+        tenantId: req.auth?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "user",
+        actorId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        actorUsername: req.user?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 500,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: { reason: "exception", direction: "debit", message: err.message },
+      });
       return res.status(500).json({ error: 'Internal server error' });
     }
   }

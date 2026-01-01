@@ -11,6 +11,7 @@ const {
 } = require('../utils/jwt');
 const { requireAuth } = require('../middleware/auth');
 const { buildRequestMeta, recordLedgerEvent } = require("../services/ledgerService");
+const { logEvent } = require("../services/auditService");
 const { initTenantContext } = require("../middleware/tenantContext");
 
 const router = express.Router();
@@ -219,6 +220,20 @@ router.post('/admin/login', async (req, res) => {
     const { emailOrUsername, password, tenantId } = req.body;
 
     if (!emailOrUsername || !password || !tenantId) {
+      await logEvent({
+        eventType: "STAFF_LOGIN_FAIL",
+        success: false,
+        tenantId,
+        requestId: req.requestId,
+        actorType: "staff",
+        actorUsername: emailOrUsername || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 400,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: { reason: "missing_credentials" },
+      });
       return res
         .status(400)
         .json({ error: 'emailOrUsername, password, and tenantId are required' });
@@ -244,16 +259,62 @@ router.post('/admin/login', async (req, res) => {
         });
 
         if (!user || user.role !== "admin") {
+          await logEvent({
+            eventType: "STAFF_LOGIN_FAIL",
+            success: false,
+            tenantId,
+            requestId: req.requestId,
+            actorType: "staff",
+            actorUsername: emailOrUsername || null,
+            route: req.originalUrl,
+            method: req.method,
+            statusCode: 401,
+            ip: req.auditContext?.ip || null,
+            userAgent: req.auditContext?.userAgent || null,
+            meta: { reason: "invalid_admin_credentials" },
+          });
           return res.status(401).json({ error: "Invalid admin credentials" });
         }
 
         const match = await user.checkPassword(password);
         if (!match) {
+          await logEvent({
+            eventType: "STAFF_LOGIN_FAIL",
+            success: false,
+            tenantId,
+            requestId: req.requestId,
+            actorType: "staff",
+            actorUsername: emailOrUsername || null,
+            route: req.originalUrl,
+            method: req.method,
+            statusCode: 401,
+            ip: req.auditContext?.ip || null,
+            userAgent: req.auditContext?.userAgent || null,
+            meta: { reason: "invalid_admin_credentials" },
+          });
           return res.status(401).json({ error: "Invalid admin credentials" });
         }
 
         const adminToken = signAdminToken(user);
         const accessToken = signAccessToken(user);
+
+        await logEvent({
+          eventType: "STAFF_LOGIN_SUCCESS",
+          success: true,
+          tenantId: user.tenantId || tenantId || null,
+          requestId: req.requestId,
+          actorType: "staff",
+          actorId: user.id,
+          actorRole: user.role,
+          actorUsername: user.username || user.email || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 200,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { source: "admin.login" },
+          transaction: req.transaction || null,
+        });
 
         return res.json({
           user: toPublicUser(user),

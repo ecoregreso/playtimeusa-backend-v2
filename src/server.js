@@ -4,6 +4,8 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
+const auditContext = require("./middleware/auditContext");
+const { logEvent } = require("./services/auditService");
 const reportsRoutes = require("./routes/adminReports");
 const analyticsRoutes = require("./routes/adminAnalytics");
 const safetyRoutes = require("./routes/safety");
@@ -73,6 +75,7 @@ app.set("trust proxy", 1);
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(auditContext);
 
 // CORS
 app.use(
@@ -125,6 +128,107 @@ app.use((req, res, next) => {
         console.warn("[API_ERROR] failed to log error:", err.message || err);
       }
     }
+  });
+  next();
+});
+
+app.use((req, res, next) => {
+  res.on("finish", async () => {
+    const status = res.statusCode;
+    if (req.originalUrl?.includes("/api/v1/staff/login")) {
+      await logEvent({
+        eventType: status >= 400 ? "STAFF_LOGIN_FAIL" : "STAFF_LOGIN_SUCCESS",
+        success: status < 400,
+        tenantId: req.body?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "staff",
+        actorUsername: req.body?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: status,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: { source: "staff.login" },
+      });
+    }
+
+    if (req.originalUrl?.includes("/api/v1/deposits/dev/mark-paid")) {
+      await logEvent({
+        eventType: "DEPOSIT",
+        success: status < 400,
+        tenantId: req.staff?.tenantId || req.auth?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "staff",
+        actorId: req.staff?.id || null,
+        actorRole: req.staff?.role || null,
+        actorUsername: req.staff?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: status,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: { intentId: req.body?.intentId || null },
+      });
+    }
+
+    if (req.originalUrl?.includes("/api/v1/withdrawals/dev/mark-sent")) {
+      await logEvent({
+        eventType: "WITHDRAW",
+        success: status < 400,
+        tenantId: req.staff?.tenantId || req.auth?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "staff",
+        actorId: req.staff?.id || null,
+        actorRole: req.staff?.role || null,
+        actorUsername: req.staff?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: status,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: { intentId: req.body?.intentId || null },
+      });
+    }
+
+    if (status !== 401 && status !== 403) {
+      return;
+    }
+
+    const actor = req.staff || req.user || null;
+    const actorType = req.staff ? "staff" : req.user ? "user" : null;
+    const tenantId =
+      req.auth?.tenantId ||
+      req.staff?.tenantId ||
+      req.user?.tenantId ||
+      req.body?.tenantId ||
+      req.body?.tenant_id ||
+      null;
+    const actorUsername =
+      actor?.username ||
+      req.body?.username ||
+      req.body?.email ||
+      req.body?.emailOrUsername ||
+      null;
+
+    await logEvent({
+      eventType: status === 401 ? "AUTH_FAILED" : "PERMISSION_DENIED",
+      success: false,
+      tenantId,
+      requestId: req.requestId,
+      actorType,
+      actorId: actor?.id || null,
+      actorRole: actor?.role || null,
+      actorUsername,
+      route: req.originalUrl,
+      method: req.method,
+      statusCode: status,
+      ip: req.auditContext?.ip || null,
+      userAgent: req.auditContext?.userAgent || null,
+      meta: {
+        reason: res.locals?.errorMessage || null,
+      },
+    });
+
   });
   next();
 });

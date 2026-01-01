@@ -8,6 +8,7 @@ const { Voucher, Wallet, Transaction, User, TenantVoucherPool } = require("../mo
 const { generateVoucherQrPng } = require("../utils/qr");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
+const { logEvent } = require("../services/auditService");
 
 const router = express.Router();
 
@@ -92,6 +93,22 @@ router.post(
       const valueBonus = Number(bonusAmount || 0);
 
       if (!Number.isFinite(valueAmount) || valueAmount <= 0) {
+        await logEvent({
+          eventType: "VOUCHER_ISSUE",
+          success: false,
+          tenantId: req.staff?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "staff",
+          actorId: req.staff?.id || null,
+          actorRole: req.staff?.role || null,
+          actorUsername: req.staff?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 400,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "invalid_amount", amount, bonusAmount, currency },
+        });
         return res.status(400).json({ error: "Invalid amount" });
       }
 
@@ -112,6 +129,22 @@ router.post(
         });
 
         if (!pool || Number(pool.poolBalanceCents || 0) < toCents(totalCredit)) {
+          await logEvent({
+            eventType: "VOUCHER_ISSUE",
+            success: false,
+            tenantId,
+            requestId: req.requestId,
+            actorType: "staff",
+            actorId: req.staff?.id || null,
+            actorRole: req.staff?.role || null,
+            actorUsername: req.staff?.username || null,
+            route: req.originalUrl,
+            method: req.method,
+            statusCode: 400,
+            ip: req.auditContext?.ip || null,
+            userAgent: req.auditContext?.userAgent || null,
+            meta: { reason: "insufficient_voucher_pool", amount: valueAmount, bonusAmount: valueBonus },
+          });
           await t.rollback();
           return res.status(400).json({ error: "Insufficient voucher pool balance" });
         }
@@ -189,9 +222,47 @@ router.post(
         },
       });
 
+      await logEvent({
+        eventType: "VOUCHER_ISSUE",
+        success: true,
+        tenantId: req.staff?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "staff",
+        actorId: req.staff?.id || null,
+        actorRole: req.staff?.role || null,
+        actorUsername: req.staff?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 201,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: {
+          voucherId: voucher.id,
+          amount: valueAmount,
+          bonusAmount: valueBonus,
+          currency: voucher.currency || "FUN",
+        },
+      });
+
       return res.status(201).json(response);
     } catch (err) {
       console.error("[VOUCHERS] POST / error:", err);
+      await logEvent({
+        eventType: "VOUCHER_ISSUE",
+        success: false,
+        tenantId: req.staff?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "staff",
+        actorId: req.staff?.id || null,
+        actorRole: req.staff?.role || null,
+        actorUsername: req.staff?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 500,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: { reason: "exception", message: err.message },
+      });
       return res.status(500).json({ error: "Failed to create voucher" });
     }
   }
@@ -207,6 +278,22 @@ router.post(
       const { code, pin } = req.body;
 
       if (!code || !pin) {
+        await logEvent({
+          eventType: "VOUCHER_REDEEM",
+          success: false,
+          tenantId: req.auth?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "user",
+          actorId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          actorUsername: req.user?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 400,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "missing_code_or_pin" },
+        });
         return res
           .status(400)
           .json({ error: "code and pin are required" });
@@ -221,6 +308,38 @@ router.post(
       });
 
       if (!voucher) {
+        await logEvent({
+          eventType: "VOUCHER_REDEEM",
+          success: false,
+          tenantId: req.auth?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "user",
+          actorId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          actorUsername: req.user?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 404,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "voucher_not_found", code },
+        });
+        await logEvent({
+          eventType: "VOUCHER_VOID",
+          success: false,
+          tenantId: req.auth?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "user",
+          actorId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          actorUsername: req.user?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 404,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "voucher_not_found", code },
+        });
         return res.status(404).json({ error: "Voucher not found" });
       }
 
@@ -228,6 +347,38 @@ router.post(
         voucher.expiresAt &&
         new Date(voucher.expiresAt) < new Date()
       ) {
+        await logEvent({
+          eventType: "VOUCHER_REDEEM",
+          success: false,
+          tenantId: req.auth?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "user",
+          actorId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          actorUsername: req.user?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 400,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "voucher_expired", code, voucherId: voucher.id },
+        });
+        await logEvent({
+          eventType: "VOUCHER_VOID",
+          success: true,
+          tenantId: req.auth?.tenantId || null,
+          requestId: req.requestId,
+          actorType: "user",
+          actorId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          actorUsername: req.user?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 400,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "voucher_expired", code, voucherId: voucher.id },
+        });
         return res.status(400).json({ error: "Voucher expired" });
       }
 
@@ -293,6 +444,29 @@ router.post(
         },
       });
 
+      await logEvent({
+        eventType: "VOUCHER_REDEEM",
+        success: true,
+        tenantId: req.auth?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "user",
+        actorId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        actorUsername: req.user?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 200,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: {
+          voucherId: voucher.id,
+          code,
+          amount,
+          bonus,
+          currency,
+        },
+      });
+
       return res.json({
         voucher,
         wallet,
@@ -301,6 +475,22 @@ router.post(
       });
     } catch (err) {
       console.error("[VOUCHERS] POST /redeem error:", err);
+      await logEvent({
+        eventType: "VOUCHER_REDEEM",
+        success: false,
+        tenantId: req.auth?.tenantId || null,
+        requestId: req.requestId,
+        actorType: "user",
+        actorId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        actorUsername: req.user?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 500,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: { reason: "exception", message: err.message },
+      });
       return res
         .status(500)
         .json({ error: "Failed to redeem voucher" });
