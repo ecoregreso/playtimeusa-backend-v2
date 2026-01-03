@@ -86,8 +86,36 @@ router.post(
   staffAuth,
   requireStaffRole("owner", "operator", "agent"),
   async (req, res) => {
+    let tenantId = null;
+    let requestedTenantId = "";
     try {
-      const { amount, bonusAmount, currency } = req.body;
+      const { amount, bonusAmount, currency, tenantId: rawTenantId } = req.body;
+      requestedTenantId = String(rawTenantId || "").trim();
+      const staffTenantId = req.staff?.tenantId || null;
+      tenantId =
+        req.staff?.role === "owner"
+          ? requestedTenantId || staffTenantId || null
+          : staffTenantId;
+
+      if (!tenantId) {
+        await logEvent({
+          eventType: "VOUCHER_ISSUE",
+          success: false,
+          tenantId: null,
+          requestId: req.requestId,
+          actorType: "staff",
+          actorId: req.staff?.id || null,
+          actorRole: req.staff?.role || null,
+          actorUsername: req.staff?.username || null,
+          route: req.originalUrl,
+          method: req.method,
+          statusCode: 400,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          meta: { reason: "missing_tenant", tenantId: requestedTenantId || null },
+        });
+        return res.status(400).json({ error: "tenantId is required" });
+      }
 
       const valueAmount = Number(amount || 0);
       const valueBonus = Number(bonusAmount || 0);
@@ -96,7 +124,7 @@ router.post(
         await logEvent({
           eventType: "VOUCHER_ISSUE",
           success: false,
-          tenantId: req.staff?.tenantId || null,
+          tenantId,
           requestId: req.requestId,
           actorType: "staff",
           actorId: req.staff?.id || null,
@@ -121,7 +149,6 @@ router.post(
       const t = await sequelize.transaction({ transaction: req.transaction });
       let voucher;
       try {
-        const tenantId = req.staff?.tenantId || null;
         const pool = await TenantVoucherPool.findOne({
           where: { tenantId },
           transaction: t,
@@ -225,7 +252,7 @@ router.post(
       await logEvent({
         eventType: "VOUCHER_ISSUE",
         success: true,
-        tenantId: req.staff?.tenantId || null,
+        tenantId,
         requestId: req.requestId,
         actorType: "staff",
         actorId: req.staff?.id || null,
@@ -250,7 +277,7 @@ router.post(
       await logEvent({
         eventType: "VOUCHER_ISSUE",
         success: false,
-        tenantId: req.staff?.tenantId || null,
+        tenantId: tenantId || req.staff?.tenantId || null,
         requestId: req.requestId,
         actorType: "staff",
         actorId: req.staff?.id || null,
@@ -261,7 +288,7 @@ router.post(
         statusCode: 500,
         ip: req.auditContext?.ip || null,
         userAgent: req.auditContext?.userAgent || null,
-        meta: { reason: "exception", message: err.message },
+        meta: { reason: "exception", message: err.message, tenantId: requestedTenantId || null },
       });
       return res.status(500).json({ error: "Failed to create voucher" });
     }
