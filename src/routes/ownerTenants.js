@@ -1,4 +1,5 @@
 const express = require("express");
+const bcrypt = require("bcryptjs");
 const { sequelize } = require("../db");
 const {
   Tenant,
@@ -7,7 +8,9 @@ const {
   TenantVoucherPool,
   CreditLedger,
   OwnerSetting,
+  StaffUser,
 } = require("../models");
+const { wipeAllData } = require("../services/wipeService");
 const { staffAuth } = require("../middleware/staffAuth");
 
 const router = express.Router();
@@ -282,5 +285,44 @@ router.post(
     }
   }
 );
+
+router.post("/wipe-all", staffAuth, requireOwner, async (req, res) => {
+  try {
+    const confirm = String(req.body?.confirm || "").trim();
+    if (confirm !== "ERASE ALL") {
+      return res.status(400).json({
+        ok: false,
+        error: "Confirmation phrase mismatch",
+        expected: "ERASE ALL",
+      });
+    }
+
+    const password = String(req.body?.password || "").trim();
+    if (!password) {
+      return res.status(400).json({ ok: false, error: "Password is required" });
+    }
+
+    const staff = await StaffUser.findByPk(req.staff?.id);
+    if (!staff) {
+      return res.status(403).json({ ok: false, error: "Staff not found" });
+    }
+
+    const ok = await bcrypt.compare(password, staff.passwordHash || "");
+    if (!ok) {
+      return res.status(403).json({ ok: false, error: "Invalid password" });
+    }
+
+    await wipeAllData({
+      transaction: req.transaction,
+      preserveOwners: true,
+      preserveOwnerSettings: true,
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[OWNER] wipe-all error:", err);
+    res.status(500).json({ ok: false, error: "Failed to wipe data" });
+  }
+});
 
 module.exports = router;
