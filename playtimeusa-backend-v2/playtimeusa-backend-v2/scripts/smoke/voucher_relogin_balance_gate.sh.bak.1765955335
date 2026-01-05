@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+API="${API_BASE_URL:-http://localhost:3000}"
+STAFF_USER="${STAFF_USER:?Set STAFF_USER}"
+STAFF_PASS="${STAFF_PASS:?Set STAFF_PASS}"
+
+node - <<'NODE'
+const API = process.env.API_BASE_URL || "http://localhost:3000";
+const STAFF_USER = process.env.STAFF_USER;
+const STAFF_PASS = process.env.STAFF_PASS;
+
+function jwtSid(token) {
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return payload.sid || null;
+  } catch {
+    return null;
+  }
+}
+
+async function req(method, path, { token, body } = {}) {
+  const headers = { "content-type": "application/json" };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+    const sid = jwtSid(token);
+    if (sid) headers["x-session-id"] = sid;
+  }
+  const res = await fetch(API + path, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const ct = res.headers.get("content-type") || "";
+  const text = await res.text();
+  let json = null;
+  if (ct.includes("application/json")) {
+    try { json = JSON.parse(text); } catch {}
+  }
+  return { res, text, json };
+}
+
+(async () => {
+  // Staff login
+  const login = await req("POST", "/api/v1/staff/login", {
+    body: { username: STAFF_USER, password: STAFF_PASS },
+  });
+  if (!login.res.ok) throw new Error(`staff login failed ${login.res.status} ${login.text}`);
+
+  const staffToken = login.json?.tokens?.accessToken || login.json?.token;
+  if (!staffToken) throw new Error("staff token missing");
+
+  // Create voucher
+  const create = await req("POST", "/api/v1/vouchers", {
+    token: staffToken,
+    body: { amount: 100, bonusAmount: 50, currency: "FUN" },
+  });
+  if (!create.res.ok) throw new Error(`create voucher failed ${create.res.status} ${create.text}`);
+
+  const v = create.json?.voucher;
+  const pin = create.json?.pin;
+  const userCode = create.json?.userCode;
+  if (!v?.code || !pin || !userCode) throw new Error("voucher create missing fields");
+
+  // First login (activates voucher)
+  const p1 = await req("POST", "/api/v1/auth/voucher-login", {
+    body: { userCode, pin, code: v.code },
+  });
+  if (!p1.res.ok) throw new Error(`player login1 failed ${p1.res.status} ${p1.text}`);
+
+  const pToken1 = p1.json?.tokens?.accessToken;
+  const session1 = p1.json?.sessionId;
+  const playerId = p1.json?.user?.id;
+  if (!pToken1 || !session1 || !playerId) throw new Error("player login1 missing token/session/user");
+
+  const w1 = await req("GET", "/api/v1/wallets", { token: pToken1 });
+  if (!w1.res.ok) throw new Error(`wallets after login1 failed ${w1.res.status} ${w1.text}`);
+  const fun1 = (w1.json?.wallets || []).find(x => (x.currency || "FUN") === "FUN") || (w1.json?.wallets || [])[0];
+  const bal1 = Number(fun1?.balance || 0);
+  if (bal1 <= 0) throw new Error("expected positive balance after activation");
+
+  // Logout (balance > 0 => SHOULD NOT recycle)
+  const lo1 = await req("POST", "/api/v1/auth/logout", { token: pToken1 });
+  if (!lo1.res.ok) throw new Error(`logout1 failed ${lo1.res.status} ${lo1.text}`);
+
+  // Relogin (should succeed and sessionId must change)
+  const p2 = await req("POST", "/api/v1/auth/voucher-login", {
+    body: { userCode, pin }, // relogin path
+  });
+  if (!p2.res.ok) throw new Error(`player login2 failed ${p2.res.status} ${p2.text}`);
+
+  const pToken2 = p2.json?.tokens?.accessToken;
+  const session2 = p2.json?.sessionId;
+  if (!pToken2 || !session2) throw new Error("player login2 missing token/session");
+  if (String(session2) === String(session1)) throw new Error("expected new sessionId on relogin");
+
+  const w2 = await req("GET", "/api/v1/wallets", { token: pToken2 });
+  if (!w2.res.ok) throw new Error(`wallets after login2 failed ${w2.res.status} ${w2.text}`);
+  const fun2 = (w2.json?.wallets || []).find(x => (x.currency || "FUN") === "FUN") || (w2.json?.wallets || [])[0];
+  const bal2 = Number(fun2?.balance || 0);
+  if (bal2 !== bal1) throw new Error(`balance changed on relogin (should not). before=${bal1} after=${bal2}`);
+
+  // Staff debits wallet to zero (simulate game losses)
+  const debit = await req("POST", `/api/v1/wallets/${playerId}/debit`, {
+    token: staffToken,
+    body: { amount: bal2, currency: "FUN", type: "test_debit_to_zero", reference: "smoke:zero" },
+  });
+  if (!debit.res.ok) throw new Error(`staff debit failed ${debit.res.status} ${debit.text}`);
+
+  // Player logout now should recycle (balance == 0)
+  const lo2 = await req("POST", "/api/v1/auth/logout", { token: pToken2 });
+  if (!lo2.res.ok) throw new Error(`logout2 failed ${lo2.res.status} ${lo2.text}`);
+
+  // Relogin should FAIL now
+  const p3 = await req("POST", "/api/v1/auth/voucher-login", {
+    body: { userCode, pin },
+  });
+  if (p3.res.ok) throw new Error("expected relogin to fail after balance==0 recycle");
+
+  console.log("PASS: relogin works while balance>0; recycle triggers only at balance==0; sessionId rotates on relogin");
+  console.log("Created:", { voucherCode: v.code, userCode, pin, balanceActivated: bal1 });
+})().catch((e) => {
+  console.error("FAIL:", e?.message || e);
+  process.exit(1);
+});
+NODE

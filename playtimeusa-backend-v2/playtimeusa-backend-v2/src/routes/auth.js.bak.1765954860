@@ -1,0 +1,393 @@
+const express = require("express");
+const bcrypt = require("bcryptjs");
+const { Op } = require("sequelize");
+
+const { sequelize, User, Voucher, Wallet, Transaction, UserSession } = require("../models");
+const { signAccessToken, signRefreshToken, verifyRefreshToken, signAdminToken } = require("../utils/jwt");
+const { startSingleSession, enforceSessionFromPayload, revokeSession } = require("../services/sessions");
+const { requireAuth, requireSessionHeader } = require("../middleware/auth");
+
+const router = express.Router();
+
+function toPublicUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    username: user.username,
+    role: user.role,
+    isActive: user.isActive,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+  };
+}
+
+function isEphemeralPlayer(user) {
+  const email = String(user?.email || "");
+  const username = String(user?.username || "");
+  return /^\d{6}$/.test(username) && email.endsWith("@playtimeusa.local");
+}
+
+function recycleIdentityTag(userId) {
+  const short = String(userId || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 10);
+  return `recycled_${Date.now()}_${short}`;
+}
+
+async function totalBalanceForUser(userId, t) {
+  const wallets = await Wallet.findAll({
+    where: { userId },
+    transaction: t,
+    lock: t.LOCK.UPDATE,
+  });
+  const total = wallets.reduce((sum, w) => sum + Number(w.balance || 0), 0);
+  return total;
+}
+
+async function recyclePlayerCredentials(user, t) {
+  const tag = recycleIdentityTag(user.id);
+
+  user.username = tag;
+  user.email = `${tag}@playtimeusa.local`;
+  user.passwordHash = await bcrypt.hash(`${tag}:${Math.random()}`, 10);
+  user.isActive = false;
+  await user.save({ transaction: t });
+
+  // revoke any lingering sessions for this identity
+  await UserSession.update(
+    { revokedAt: new Date(), updatedAt: new Date() },
+    { where: { userId: user.id, revokedAt: null }, transaction: t }
+  );
+}
+
+async function issueUserTokens(user, req) {
+  const session = await startSingleSession({
+    actorType: "user",
+    userId: user.id,
+    role: user.role,
+    ip: req.ip,
+    userAgent: req.get("user-agent"),
+  });
+
+  const accessToken = signAccessToken(user, { actorType: "user", sid: session.id });
+  const refreshToken = signRefreshToken(user, { actorType: "user", sid: session.id });
+
+  return { session, tokens: { accessToken, refreshToken } };
+}
+
+// POST /auth/login (email/username + password)
+router.post("/login", async (req, res) => {
+  try {
+    const { emailOrUsername, password } = req.body;
+    if (!emailOrUsername || !password) return res.status(400).json({ error: "emailOrUsername and password are required" });
+
+    const user = await User.findOne({
+      where: { [Op.or]: [{ email: emailOrUsername }, { username: emailOrUsername }] },
+    });
+
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+    if (!user.isActive) return res.status(403).json({ error: "Account disabled" });
+
+    const match = await user.checkPassword(password);
+    if (!match) return res.status(401).json({ error: "Invalid credentials" });
+
+    const { session, tokens } = await issueUserTokens(user, req);
+
+    return res.json({ user: toPublicUser(user), tokens, sessionId: session.id });
+  } catch (err) {
+    console.error("[AUTH] /auth/login error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
+ * POST /auth/voucher-login
+ *
+ * Behaviors:
+ * 1) Re-login (balance > 0): { userCode, pin } (or QR provides userCode+pin) => new session id each login
+ * 2) First-time activation: { code, pin } or { userCode, pin } matched to a NEW voucher => redeem + credit + create user
+ *
+ * IMPORTANT: Voucher credit happens once. Re-logins do NOT re-credit.
+ */
+router.post("/voucher-login", async (req, res) => {
+  const raw = req.body || {};
+  const pin = String(raw.pin || "").trim();
+  const code = raw.code ? String(raw.code).trim() : null;
+  const userCode = raw.userCode ? String(raw.userCode).trim() : null;
+
+  if (!pin) return res.status(400).json({ error: "pin is required" });
+  if (!code && !userCode) return res.status(400).json({ error: "userCode or code is required" });
+
+  const isValidUserCode = (uc) => /^\d{6}$/.test(String(uc || ""));
+
+  try {
+    // ---------- A) Existing user re-login path ----------
+    // Prefer userCode if provided (manual + QR both have it)
+    if (userCode && isValidUserCode(userCode)) {
+      const existing = await User.findOne({ where: { username: userCode } });
+      if (existing) {
+        if (!existing.isActive) return res.status(403).json({ error: "Account disabled" });
+
+        const match = await existing.checkPassword(pin);
+        if (!match) return res.status(401).json({ error: "Invalid credentials" });
+
+        const balCheck = await sequelize.transaction(async (t) => {
+          const locked = await User.findByPk(existing.id, { transaction: t, lock: t.LOCK.UPDATE });
+          const total = await totalBalanceForUser(existing.id, t);
+
+          if (locked && isEphemeralPlayer(locked) && total <= 0) {
+            await recyclePlayerCredentials(locked, t);
+            return { ok: false, status: 401, payload: { error: "Balance is zero; credentials recycled" } };
+          }
+          return { ok: true, total };
+        });
+
+        if (!balCheck.ok) return res.status(balCheck.status).json(balCheck.payload);
+
+        const { session, tokens } = await issueUserTokens(existing, req);
+
+        return res.json({
+          ok: true,
+          user: toPublicUser(existing),
+          tokens,
+          sessionId: session.id,
+          note: "relogin",
+        });
+      }
+    }
+
+    // If userCode wasn’t sent, allow QR login using code+pin for redeemed voucher:
+    if (code) {
+      const vAny = await Voucher.findOne({ where: { code, pin } });
+      if (vAny?.redeemedByUserId) {
+        const u = await User.findByPk(vAny.redeemedByUserId);
+        if (u && u.isActive) {
+          const match = await u.checkPassword(pin);
+          if (match) {
+            const balCheck = await sequelize.transaction(async (t) => {
+              const locked = await User.findByPk(u.id, { transaction: t, lock: t.LOCK.UPDATE });
+              const total = await totalBalanceForUser(u.id, t);
+              if (locked && isEphemeralPlayer(locked) && total <= 0) {
+                await recyclePlayerCredentials(locked, t);
+                return { ok: false, status: 401, payload: { error: "Balance is zero; credentials recycled" } };
+              }
+              return { ok: true };
+            });
+            if (!balCheck.ok) return res.status(balCheck.status).json(balCheck.payload);
+
+            const { session, tokens } = await issueUserTokens(u, req);
+            return res.json({ ok: true, user: toPublicUser(u), tokens, sessionId: session.id, note: "relogin_via_qr" });
+          }
+        }
+      }
+    }
+
+    // ---------- B) First-time voucher activation (single credit) ----------
+    const out = await sequelize.transaction(async (t) => {
+      let voucher = null;
+
+      if (code) {
+        voucher = await Voucher.findOne({
+          where: { code, pin, status: "new" },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+      } else {
+        // userCode+pin: match voucher metadata userCode
+        voucher = await Voucher.findOne({
+          where: {
+            pin,
+            status: "new",
+            [Op.and]: sequelize.where(
+              sequelize.literal(`metadata->>'userCode'`),
+              String(userCode)
+            ),
+          },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+      }
+
+      if (!voucher) return { ok: false, status: 401, payload: { error: "Invalid credentials or voucher already used" } };
+      if (voucher.expiresAt && new Date(voucher.expiresAt) < new Date()) return { ok: false, status: 400, payload: { error: "Voucher expired" } };
+
+      const meta = voucher.metadata || {};
+      const loginCode = String(userCode || meta.userCode || "").trim();
+      if (!isValidUserCode(loginCode)) return { ok: false, status: 500, payload: { error: "Voucher missing valid userCode" } };
+
+      // Create new ephemeral player identity for this voucher
+      const passwordHash = await bcrypt.hash(pin, 10);
+      const email = `${loginCode}@playtimeusa.local`;
+
+      // Should not exist because userCode is unique among new vouchers, but be safe:
+      const existing = await User.findOne({ where: { username: loginCode }, transaction: t, lock: t.LOCK.UPDATE });
+      if (existing) {
+        const active = await UserSession.findOne({ where: { userId: existing.id, revokedAt: null }, transaction: t, lock: t.LOCK.UPDATE });
+        if (active) return { ok: false, status: 409, payload: { error: "This code is currently in use" } };
+
+        const total = await totalBalanceForUser(existing.id, t);
+        // If old account has balance > 0, don’t steal the identity.
+        if (total > 0) return { ok: false, status: 409, payload: { error: "This code is reserved (non-zero balance)" } };
+
+        // balance 0: recycle it to free the username
+        await recyclePlayerCredentials(existing, t);
+      }
+
+      const player = await User.create(
+        { email, username: loginCode, passwordHash, role: "player", isActive: true },
+        { transaction: t }
+      );
+
+      // Wallet credit
+      const currency = voucher.currency || "FUN";
+      let wallet = await Wallet.findOne({ where: { userId: player.id, currency }, transaction: t, lock: t.LOCK.UPDATE });
+      if (!wallet) wallet = await Wallet.create({ userId: player.id, currency, balance: 0 }, { transaction: t });
+
+      const before = Number(wallet.balance || 0);
+      const amount = Number(voucher.amount || 0);
+      const bonus = Number(voucher.bonusAmount || 0);
+      const total = amount + bonus;
+
+      wallet.balance = before + total;
+      await wallet.save({ transaction: t });
+
+      const tx = await Transaction.create(
+        {
+          walletId: wallet.id,
+          type: "voucher_credit",
+          amount: total,
+          balanceBefore: before,
+          balanceAfter: wallet.balance,
+          reference: `voucher:${voucher.code}:activate`,
+          metadata: { voucherId: voucher.id, amount, bonus, userCode: loginCode },
+          createdByUserId: player.id,
+        },
+        { transaction: t }
+      );
+
+      // Mark voucher redeemed (single credit)
+      voucher.status = "redeemed";
+      voucher.redeemedAt = new Date();
+      voucher.redeemedByUserId = player.id;
+      await voucher.save({ transaction: t });
+
+      const voucherSafe = voucher.toJSON ? voucher.toJSON() : voucher;
+      if (voucherSafe && typeof voucherSafe === "object") delete voucherSafe.pin;
+
+      return { ok: true, player, wallet, voucher: voucherSafe, tx };
+    });
+
+    if (!out.ok) return res.status(out.status).json(out.payload);
+
+    const { session, tokens } = await issueUserTokens(out.player, req);
+
+    // stamp sessionId into the voucher_credit tx metadata for audit
+    try {
+      const txRow = await Transaction.findByPk(out.tx.id);
+      const md = txRow?.metadata || {};
+      txRow.metadata = { ...md, sessionId: session.id };
+      await txRow.save();
+    } catch {}
+
+    return res.json({
+      ok: true,
+      user: toPublicUser(out.player),
+      tokens,
+      sessionId: session.id,
+      wallet: out.wallet,
+      voucher: out.voucher,
+      note: "activated",
+    });
+  } catch (err) {
+    console.error("[AUTH] /auth/voucher-login error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// POST /auth/refresh
+router.post("/refresh", async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) return res.status(400).json({ error: "refreshToken is required" });
+
+    const payload = verifyRefreshToken(refreshToken);
+    if (payload.type !== "refresh") return res.status(401).json({ error: "Invalid token type" });
+    if (payload.actorType !== "user") return res.status(403).json({ error: "Not a user refresh token" });
+
+    await enforceSessionFromPayload(payload, { touch: false });
+
+    const user = await User.findByPk(payload.sub);
+    if (!user || !user.isActive) return res.status(401).json({ error: "Invalid or inactive user" });
+
+    const newAccessToken = signAccessToken(user, { actorType: "user", sid: payload.sid });
+    const newRefreshToken = signRefreshToken(user, { actorType: "user", sid: payload.sid });
+
+    return res.json({ user: toPublicUser(user), tokens: { accessToken: newAccessToken, refreshToken: newRefreshToken } });
+  } catch (err) {
+    console.error("[AUTH] /auth/refresh error:", err.message || err);
+    return res.status(401).json({ error: "Invalid or expired refresh token" });
+  }
+});
+
+// POST /auth/logout
+// - always revokes session
+// - ONLY recycles (disables + frees username) if total balance == 0
+router.post("/logout", requireAuth, requireSessionHeader, async (req, res) => {
+  try {
+    await revokeSession(req.user.sid);
+
+    if (req.user.actorType === "user" && req.user.role === "player") {
+      await sequelize.transaction(async (t) => {
+        const u = await User.findByPk(req.user.id, { transaction: t, lock: t.LOCK.UPDATE });
+        if (!u || !isEphemeralPlayer(u)) return;
+
+        const total = await totalBalanceForUser(u.id, t);
+        if (total <= 0) {
+          await recyclePlayerCredentials(u, t);
+        }
+      });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[AUTH] /auth/logout error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// POST /admin/login
+router.post("/admin/login", async (req, res) => {
+  try {
+    const { emailOrUsername, password } = req.body;
+    if (!emailOrUsername || !password) return res.status(400).json({ error: "emailOrUsername and password are required" });
+
+    const user = await User.findOne({
+      where: { [Op.or]: [{ email: emailOrUsername }, { username: emailOrUsername }] },
+    });
+
+    if (!user || user.role !== "admin") return res.status(401).json({ error: "Invalid admin credentials" });
+
+    const match = await user.checkPassword(password);
+    if (!match) return res.status(401).json({ error: "Invalid admin credentials" });
+
+    const { session, tokens } = await issueUserTokens(user, req);
+    const adminToken = signAdminToken(user);
+
+    return res.json({ user: toPublicUser(user), tokens: { adminToken, ...tokens }, sessionId: session.id });
+  } catch (err) {
+    console.error("[AUTH] /admin/login error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// GET /auth/me
+router.get("/me", requireAuth, async (req, res) => {
+  try {
+    const user = await User.findByPk(req.user.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    return res.json({ user: toPublicUser(user) });
+  } catch (err) {
+    console.error("[AUTH] /auth/me error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+module.exports = router;
