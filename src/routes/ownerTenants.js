@@ -20,6 +20,7 @@ const { sequelize } = require("../db");
 const { staffAuth, requirePermission } = require("../middleware/staffAuth");
 const { PERMISSIONS, ROLE_DEFAULT_PERMISSIONS, ROLES } = require("../constants/permissions");
 const { getJson, setJson, safeParseJson, setSetting, getSetting } = require("../utils/ownerSettings");
+const { wipeAllData } = require("../services/wipeService");
 
 const router = express.Router();
 
@@ -639,6 +640,49 @@ router.post(
     }
   }
 );
+
+// --------------------
+// System reset (owner-only)
+// --------------------
+router.post("/wipe-all", staffAuth, requireOwner, async (req, res) => {
+  try {
+    const confirm = String(req.body?.confirm || "").trim();
+    if (confirm !== "ERASE ALL") {
+      return res.status(400).json({
+        ok: false,
+        error: "Confirmation phrase mismatch",
+        expected: "ERASE ALL",
+      });
+    }
+
+    const password = String(req.body?.password || "").trim();
+    if (!password) {
+      return res.status(400).json({ ok: false, error: "Password is required" });
+    }
+
+    const staff = await StaffUser.findByPk(req.staff?.id);
+    if (!staff) {
+      return res.status(403).json({ ok: false, error: "Staff not found" });
+    }
+
+    const ok = await bcrypt.compare(password, staff.passwordHash || "");
+    if (!ok) {
+      return res.status(403).json({ ok: false, error: "Invalid password" });
+    }
+
+    await wipeAllData({
+      transaction: req.transaction,
+      preserveOwners: true,
+      preserveOwnerSettings: true,
+      resetTenantBalances: true,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[OWNER] wipe-all error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to wipe data" });
+  }
+});
 
 // --------------------
 // Back-compat: distributors endpoints
