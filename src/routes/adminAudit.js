@@ -118,10 +118,11 @@ router.get(
   staffAuth,
   requirePermission(PERMISSIONS.FINANCE_READ),
   async (req, res) => {
+    let range;
     try {
-      const range = analytics.parseRange(req.query);
+      range = analytics.parseRange(req.query);
       const findings = await analytics.runAudit(range, {});
-      res.json({
+      return res.json({
         ok: true,
         range: {
           from: range.from,
@@ -132,8 +133,21 @@ router.get(
         findings,
       });
     } catch (err) {
+      if (isMissingTableError(err) && range) {
+        return res.json({
+          ok: true,
+          range: {
+            from: range.from,
+            to: range.to,
+            bucket: range.bucket,
+            timezone: range.timezone,
+          },
+          findings: [],
+          warnings: ["Audit data is unavailable because analytics tables are missing."],
+        });
+      }
       console.error("[ADMIN_AUDIT] run error:", err);
-      res.status(500).json({ ok: false, error: "Failed to run audit" });
+      return res.status(500).json({ ok: false, error: "Failed to run audit" });
     }
   }
 );
