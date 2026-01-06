@@ -16,6 +16,27 @@ function isMissingTableError(err) {
   return code === "42P01";
 }
 
+function getDbErrorCode(err) {
+  return err?.original?.code || err?.parent?.code || null;
+}
+
+function shouldSoftFailAudit(err) {
+  const code = getDbErrorCode(err);
+  if (code && ["42P01", "42703", "42883", "42P07", "42P04"].includes(code)) {
+    return true;
+  }
+  const message = String(err?.message || "");
+  if (message.includes("does not exist")) return true;
+  if (err?.name === "SequelizeDatabaseError" && code) return true;
+  return false;
+}
+
+function buildAuditWarning(err) {
+  const code = getDbErrorCode(err);
+  const suffix = code ? ` (${code})` : "";
+  return `Audit data is unavailable because analytics tables or schema are missing${suffix}.`;
+}
+
 async function safeFindAll(model, options) {
   try {
     return await model.findAll(options);
@@ -133,7 +154,7 @@ router.get(
         findings,
       });
     } catch (err) {
-      if (isMissingTableError(err) && range) {
+      if ((isMissingTableError(err) || shouldSoftFailAudit(err)) && range) {
         return res.json({
           ok: true,
           range: {
@@ -143,7 +164,7 @@ router.get(
             timezone: range.timezone,
           },
           findings: [],
-          warnings: ["Audit data is unavailable because analytics tables are missing."],
+          warnings: [buildAuditWarning(err)],
         });
       }
       console.error("[ADMIN_AUDIT] run error:", err);
