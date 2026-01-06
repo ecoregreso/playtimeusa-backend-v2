@@ -9,7 +9,8 @@
     "test": "echo \"No tests defined yet\" && exit 0",
     "migrate": "node scripts/migrate.js",
     "test:rls": "bash scripts/test_rls.sh",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "openapi:lint": "node scripts/openapi-lint.js"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.0",
-    "supertest": "^6.3.4"
+    "supertest": "^6.3.4",
+    "yaml": "^2.4.5"
   }
 }

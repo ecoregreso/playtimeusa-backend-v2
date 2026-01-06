@@ -1,0 +1,2803 @@
+openapi: 3.1.0
+info:
+  title: Admin UI Contract
+  version: 0.1.0
+servers:
+  - url: /api/v1
+tags:
+  - name: staff
+  - name: owner
+  - name: admin
+  - name: players
+  - name: vouchers
+  - name: "purchase-orders"
+  - name: messaging
+  - name: system
+  - name: public
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              {}
+          required:
+            - code
+            - message
+      required:
+        - ok
+        - error
+    NotImplementedError:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+security:
+  - bearerAuth:
+      []
+paths:
+  /.coingecko.com/api/v3/simple/price:
+    get:
+      tags:
+        - admin
+      summary: GET /.coingecko.com/api/v3/simple/price
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /.coingecko.com/api/v3/simple/price
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /...:
+    get:
+      tags:
+        - admin
+      summary: GET /...
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /...
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/analytics/attribution:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/analytics/attribution
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/analytics/attribution
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/analytics/funnel:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/analytics/funnel
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/analytics/funnel
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/analytics/games:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/analytics/games
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/analytics/games
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/analytics/ltv:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/analytics/ltv
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/analytics/ltv
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/analytics/ops:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/analytics/ops
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/analytics/ops
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/analytics/overview:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/analytics/overview
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/analytics/overview
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/analytics/players:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/analytics/players
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/analytics/players
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/analytics/revenue:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/analytics/revenue
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/analytics/revenue
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/audit:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/audit
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/audit
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/audit/run:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/audit/run
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/audit/run
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/players:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/players
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/players
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/players/{param}:
+    get:
+      tags:
+        - admin
+      summary: "GET /admin/players/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /admin/players/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/players/{param}/adjust:
+    get:
+      tags:
+        - admin
+      summary: "GET /admin/players/{param}/adjust"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /admin/players/{param}/adjust"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/players/{param}/rounds:
+    get:
+      tags:
+        - admin
+      summary: "GET /admin/players/{param}/rounds"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /admin/players/{param}/rounds"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/players/{param}/sessions:
+    get:
+      tags:
+        - admin
+      summary: "GET /admin/players/{param}/sessions"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /admin/players/{param}/sessions"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/players/{param}/transactions:
+    get:
+      tags:
+        - admin
+      summary: "GET /admin/players/{param}/transactions"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /admin/players/{param}/transactions"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/reports/behavior:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/reports/behavior
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/reports/behavior
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/reports/daily:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/reports/daily
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/reports/daily
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/reports/operations:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/reports/operations
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/reports/operations
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/reports/performance:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/reports/performance
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/reports/performance
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/reports/range:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/reports/range
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/reports/range
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/reports/risk:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/reports/risk
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/reports/risk
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/safety/actions:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/safety/actions
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/safety/actions
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/safety/summary:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/safety/summary
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/safety/summary
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/sessions:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/sessions
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/sessions
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/sessions/{param}/revoke:
+    get:
+      tags:
+        - admin
+      summary: "GET /admin/sessions/{param}/revoke"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /admin/sessions/{param}/revoke"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/staff:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/staff
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/staff
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/staff/{param}:
+    get:
+      tags:
+        - admin
+      summary: "GET /admin/staff/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /admin/staff/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+    patch:
+      tags:
+        - admin
+      summary: "PATCH /admin/staff/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: axios call
+  /admin/staff/{param}/password:
+    get:
+      tags:
+        - admin
+      summary: "GET /admin/staff/{param}/password"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /admin/staff/{param}/password"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+    patch:
+      tags:
+        - admin
+      summary: "PATCH /admin/staff/{param}/password"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: axios call
+  /admin/tenants/{param}/wipe:
+    get:
+      tags:
+        - admin
+      summary: "GET /admin/tenants/{param}/wipe"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /admin/tenants/{param}/wipe"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /admin/transactions:
+    get:
+      tags:
+        - admin
+      summary: GET /admin/transactions
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /admin/transactions
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /deposits/admin/pending:
+    get:
+      tags:
+        - admin
+      summary: GET /deposits/admin/pending
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /deposits/admin/pending
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /deposits/dev/mark-paid:
+    get:
+      tags:
+        - admin
+      summary: "GET /deposits/dev/mark-paid"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /deposits/dev/mark-paid"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /public/brand:
+    get:
+      tags:
+        - public
+      summary: GET /public/brand
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+      security:
+        []
+    post:
+      tags:
+        - public
+      summary: POST /public/brand
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+      security:
+        []
+    x-method-unknown: true
+  /purchase-orders:
+    get:
+      tags:
+        - "purchase-orders"
+      summary: "GET /purchase-orders"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - "purchase-orders"
+      summary: "POST /purchase-orders"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /purchase-orders/{param}:
+    get:
+      tags:
+        - "purchase-orders"
+      summary: "GET /purchase-orders/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - "purchase-orders"
+      summary: "POST /purchase-orders/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+    delete:
+      tags:
+        - "purchase-orders"
+      summary: "DELETE /purchase-orders/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: axios call
+  /purchase-orders/{param}/acknowledge:
+    get:
+      tags:
+        - "purchase-orders"
+      summary: "GET /purchase-orders/{param}/acknowledge"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - "purchase-orders"
+      summary: "POST /purchase-orders/{param}/acknowledge"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /purchase-orders/{param}/approve:
+    get:
+      tags:
+        - "purchase-orders"
+      summary: "GET /purchase-orders/{param}/approve"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - "purchase-orders"
+      summary: "POST /purchase-orders/{param}/approve"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /purchase-orders/{param}/confirm-payment:
+    get:
+      tags:
+        - "purchase-orders"
+      summary: "GET /purchase-orders/{param}/confirm-payment"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - "purchase-orders"
+      summary: "POST /purchase-orders/{param}/confirm-payment"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /purchase-orders/{param}/mark-credited:
+    get:
+      tags:
+        - "purchase-orders"
+      summary: "GET /purchase-orders/{param}/mark-credited"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - "purchase-orders"
+      summary: "POST /purchase-orders/{param}/mark-credited"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /purchase-orders/{param}/messages:
+    get:
+      tags:
+        - "purchase-orders"
+      summary: "GET /purchase-orders/{param}/messages"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - "purchase-orders"
+      summary: "POST /purchase-orders/{param}/messages"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /purchase-orders/owner-address:
+    get:
+      tags:
+        - "purchase-orders"
+      summary: "GET /purchase-orders/owner-address"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - "purchase-orders"
+      summary: "POST /purchase-orders/owner-address"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /staff/login:
+    get:
+      tags:
+        - staff
+      summary: GET /staff/login
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+      security:
+        []
+    post:
+      tags:
+        - staff
+      summary: POST /staff/login
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+      security:
+        []
+    x-method-unknown: true
+  /staff/logout:
+    get:
+      tags:
+        - staff
+      summary: GET /staff/logout
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: POST /staff/logout
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /staff/messaging/keys:
+    get:
+      tags:
+        - staff
+      summary: GET /staff/messaging/keys
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: POST /staff/messaging/keys
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /staff/messaging/keys/{param}:
+    get:
+      tags:
+        - staff
+      summary: "GET /staff/messaging/keys/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: "POST /staff/messaging/keys/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /staff/messaging/keys/self:
+    get:
+      tags:
+        - staff
+      summary: GET /staff/messaging/keys/self
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: POST /staff/messaging/keys/self
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /staff/messaging/messages:
+    get:
+      tags:
+        - staff
+      summary: GET /staff/messaging/messages
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: POST /staff/messaging/messages
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /staff/messaging/messages/{param}:
+    get:
+      tags:
+        - staff
+      summary: "GET /staff/messaging/messages/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: "POST /staff/messaging/messages/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+    delete:
+      tags:
+        - staff
+      summary: "DELETE /staff/messaging/messages/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: axios call
+  /staff/messaging/messages/{param}/read:
+    get:
+      tags:
+        - staff
+      summary: "GET /staff/messaging/messages/{param}/read"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: "POST /staff/messaging/messages/{param}/read"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /staff/messaging/messages/inbox:
+    get:
+      tags:
+        - staff
+      summary: GET /staff/messaging/messages/inbox
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: POST /staff/messaging/messages/inbox
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+    delete:
+      tags:
+        - staff
+      summary: DELETE /staff/messaging/messages/inbox
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: axios call
+  /staff/messaging/messages/thread/{param}:
+    get:
+      tags:
+        - staff
+      summary: "GET /staff/messaging/messages/thread/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: "POST /staff/messaging/messages/thread/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+    delete:
+      tags:
+        - staff
+      summary: "DELETE /staff/messaging/messages/thread/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: axios call
+  /staff/push/devices:
+    get:
+      tags:
+        - staff
+      summary: GET /staff/push/devices
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: POST /staff/push/devices
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /staff/push/devices/{param}:
+    get:
+      tags:
+        - staff
+      summary: "GET /staff/push/devices/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: "POST /staff/push/devices/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+    delete:
+      tags:
+        - staff
+      summary: "DELETE /staff/push/devices/{param}"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: axios call
+  /staff/push/register:
+    get:
+      tags:
+        - staff
+      summary: GET /staff/push/register
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: POST /staff/push/register
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /staff/push/test:
+    get:
+      tags:
+        - staff
+      summary: GET /staff/push/test
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: POST /staff/push/test
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /staff/push/vapid-public:
+    get:
+      tags:
+        - staff
+      summary: "GET /staff/push/vapid-public"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - staff
+      summary: "POST /staff/push/vapid-public"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /vouchers:
+    get:
+      tags:
+        - vouchers
+      summary: GET /vouchers
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - vouchers
+      summary: POST /vouchers
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /withdrawals/admin/pending:
+    get:
+      tags:
+        - admin
+      summary: GET /withdrawals/admin/pending
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: POST /withdrawals/admin/pending
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
+  /withdrawals/dev/mark-sent:
+    get:
+      tags:
+        - admin
+      summary: "GET /withdrawals/dev/mark-sent"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    post:
+      tags:
+        - admin
+      summary: "POST /withdrawals/dev/mark-sent"
+      responses:
+        200:
+          description: OK
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden
+        500:
+          description: Server error
+        501:
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedError"
+      description: "Method unknown. Notes: string literal"
+    x-method-unknown: true
