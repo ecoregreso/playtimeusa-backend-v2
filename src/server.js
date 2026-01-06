@@ -28,6 +28,7 @@ const purchaseOrdersRoutes = require("./routes/purchaseOrders");
 const gamesRoutes = require("./routes/games");
 const ownerTenantsRoutes = require("./routes/ownerTenants");
 const publicBrandRoutes = require("./routes/publicBrand");
+const { buildNotImplementedRouter } = require("./routes/notImplemented");
 
 const {
   StaffUser,
@@ -76,6 +77,85 @@ app.set("trust proxy", 1);
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+function normalizeErrorPayload(payload) {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    payload.ok === false &&
+    payload.error &&
+    payload.error.code &&
+    payload.error.message
+  ) {
+    return payload;
+  }
+
+  let message = "Request failed";
+  let code = "ERROR";
+  let details = payload ?? null;
+
+  if (typeof payload === "string") {
+    message = payload;
+  } else if (payload && typeof payload === "object") {
+    if (payload.error) {
+      if (typeof payload.error === "string") {
+        message = payload.error;
+      } else if (payload.error.message) {
+        message = payload.error.message;
+      }
+      code = payload.error.code || payload.code || code;
+      details = payload.error.details || payload.details || payload;
+    } else if (payload.message) {
+      message = payload.message;
+      code = payload.code || code;
+    }
+  }
+
+  return {
+    ok: false,
+    error: {
+      code,
+      message,
+      details,
+    },
+  };
+}
+
+// Standardize /api/v1 responses while preserving legacy payloads.
+app.use("/api/v1", (req, res, next) => {
+  const originalJson = res.json.bind(res);
+  res.json = (payload) => {
+    const status = res.statusCode;
+
+    if (payload && typeof payload === "object" && payload.ok === false) {
+      return originalJson(normalizeErrorPayload(payload));
+    }
+
+    if (status >= 400) {
+      return originalJson(normalizeErrorPayload(payload));
+    }
+
+    if (payload && typeof payload === "object" && payload.ok === true) {
+      if ("data" in payload) return originalJson(payload);
+      if (Array.isArray(payload)) {
+        return originalJson({ ok: true, data: payload });
+      }
+      return originalJson({ ok: true, data: payload, ...payload });
+    }
+
+    if (Array.isArray(payload)) {
+      return originalJson({ ok: true, data: payload });
+    }
+
+    if (payload && typeof payload === "object") {
+      return originalJson({ ok: true, data: payload, ...payload });
+    }
+
+    return originalJson({ ok: true, data: payload });
+  };
+
+  next();
+});
 
 // CORS
 app.use(
@@ -185,6 +265,7 @@ app.use("/api/v1/games", gamesRoutes);
 app.use("/api/v1", financeRoutes);
 app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
 app.use("/api/v1/owner", ownerTenantsRoutes);
+app.use("/api/v1", buildNotImplementedRouter());
 
 // Sequelize sync is disabled by default; run migrations instead.
 if (process.env.DB_SYNC === "true") {

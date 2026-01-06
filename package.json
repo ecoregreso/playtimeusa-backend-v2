@@ -10,7 +10,8 @@
     "migrate": "node scripts/migrate.js",
     "test:rls": "bash scripts/test_rls.sh",
     "smoke": "node scripts/smoke.js",
-    "openapi:lint": "node scripts/openapi-lint.js"
+    "openapi:lint": "node scripts/openapi-lint.js",
+    "contract:check": "node scripts/contract/checkOpenApiRoutes.js"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
@@ -29,11 +30,11 @@
     "pg-hstore": "^2.3.4",
     "qrcode": "^1.5.4",
     "sequelize": "^6.37.7",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "yaml": "^2.4.5"
   },
   "devDependencies": {
     "nodemon": "^3.1.0",
-    "supertest": "^6.3.4",
-    "yaml": "^2.4.5"
+    "supertest": "^6.3.4"
   }
 }

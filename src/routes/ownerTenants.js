@@ -14,6 +14,7 @@ const {
   CreditLedger,
   OwnerSetting,
   StaffUser,
+  StaffMessage,
 } = require("../models");
 
 const { sequelize } = require("../db");
@@ -118,6 +119,62 @@ async function getSystemConfig() {
 }
 
 // --------------------
+// Owner inbox (cross-tenant messages)
+// --------------------
+
+router.get("/inbox", staffAuth, requireOwner, async (req, res) => {
+  const limitRaw = parseInt(req.query.limit || "50", 10);
+  const offsetRaw = parseInt(req.query.offset || "0", 10);
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+  const offset = Number.isFinite(offsetRaw) ? Math.max(offsetRaw, 0) : 0;
+
+  try {
+    const where = { toId: req.staff?.id };
+
+    const [messages, unreadCount] = await Promise.all([
+      StaffMessage.findAll({
+        where,
+        order: [["createdAt", "DESC"]],
+        limit,
+        offset,
+      }),
+      StaffMessage.count({
+        where: { ...where, readAt: null },
+      }),
+    ]);
+
+    const staffIds = Array.from(
+      new Set(messages.flatMap((m) => [m.fromId, m.toId]).filter(Boolean))
+    );
+    const staffRows = staffIds.length
+      ? await StaffUser.findAll({ where: { id: staffIds } })
+      : [];
+    const staffById = new Map(staffRows.map((s) => [s.id, s]));
+
+    res.json({
+      ok: true,
+      unreadCount,
+      messages: messages.map((m) => ({
+        id: m.id,
+        threadId: m.threadId,
+        fromId: m.fromId,
+        toId: m.toId,
+        tenantId: m.tenantId,
+        type: m.type,
+        ciphertext: m.ciphertext,
+        createdAt: m.createdAt,
+        readAt: m.readAt,
+        fromUsername: staffById.get(m.fromId)?.username || null,
+        toUsername: staffById.get(m.toId)?.username || null,
+      })),
+    });
+  } catch (err) {
+    console.error("[OWNER] inbox error:", err);
+    res.status(500).json({ ok: false, error: "Failed to load inbox" });
+  }
+});
+
+// --------------------
 // Brand control
 // --------------------
 
@@ -163,41 +220,35 @@ router.post(
 // System config (global)
 // --------------------
 
-router.get(
-  "/config/system",
-  staffAuth,
-  requireOwner,
-  async (req, res) => {
-    try {
-      const config = await getSystemConfig();
-      res.json({ ok: true, config });
-    } catch (err) {
-      console.error("[OWNER] system config get error:", err);
-      res.status(500).json({ ok: false, error: "Failed to load system config" });
-    }
+async function handleGetSystemConfig(req, res) {
+  try {
+    const config = await getSystemConfig();
+    res.json({ ok: true, config });
+  } catch (err) {
+    console.error("[OWNER] system config get error:", err);
+    res.status(500).json({ ok: false, error: "Failed to load system config" });
   }
-);
+}
 
-router.post(
-  "/config/system",
-  staffAuth,
-  requireOwner,
-  async (req, res) => {
-    try {
-      const patch = req.body?.config;
-      if (!patch || typeof patch !== "object") {
-        return res.status(400).json({ ok: false, error: "config must be an object" });
-      }
-      const current = await getSystemConfig();
-      const merged = { ...current, ...patch };
-      await setJson(SYSTEM_CONFIG_KEY, merged);
-      res.json({ ok: true, config: merged });
-    } catch (err) {
-      console.error("[OWNER] system config set error:", err);
-      res.status(500).json({ ok: false, error: "Failed to save system config" });
+async function handleSetSystemConfig(req, res) {
+  try {
+    const patch = req.body?.config;
+    if (!patch || typeof patch !== "object") {
+      return res.status(400).json({ ok: false, error: "config must be an object" });
     }
+    const current = await getSystemConfig();
+    const merged = { ...current, ...patch };
+    await setJson(SYSTEM_CONFIG_KEY, merged);
+    res.json({ ok: true, config: merged });
+  } catch (err) {
+    console.error("[OWNER] system config set error:", err);
+    res.status(500).json({ ok: false, error: "Failed to save system config" });
   }
-);
+}
+
+router.get("/config/system", staffAuth, requireOwner, handleGetSystemConfig);
+router.post("/config/system", staffAuth, requireOwner, handleSetSystemConfig);
+router.put("/config/system", staffAuth, requireOwner, handleSetSystemConfig);
 
 // --------------------
 // Tenants (tenant === distributor)
@@ -419,97 +470,91 @@ router.post(
 );
 
 // Per-tenant config
-router.get(
-  "/tenants/:tenantId/config",
-  staffAuth,
-  requireOwner,
-  async (req, res) => {
-    try {
-      const tenantId = String(req.params.tenantId || "").trim();
-      const system = await getSystemConfig();
-      const tenantCfg = await getJson(tenantConfigKey(tenantId), {});
-      const effective = { ...system, ...(tenantCfg || {}) };
-      res.json({ ok: true, system, tenant: tenantCfg || {}, effective });
-    } catch (err) {
-      console.error("[OWNER] tenant config get error:", err);
-      res.status(500).json({ ok: false, error: "Failed to load tenant config" });
-    }
+async function handleGetTenantConfig(req, res) {
+  try {
+    const tenantId = String(req.params.tenantId || req.params.id || "").trim();
+    const system = await getSystemConfig();
+    const tenantCfg = await getJson(tenantConfigKey(tenantId), {});
+    const effective = { ...system, ...(tenantCfg || {}) };
+    res.json({ ok: true, system, tenant: tenantCfg || {}, effective });
+  } catch (err) {
+    console.error("[OWNER] tenant config get error:", err);
+    res.status(500).json({ ok: false, error: "Failed to load tenant config" });
   }
-);
+}
 
-router.post(
-  "/tenants/:tenantId/config",
-  staffAuth,
-  requireOwner,
-  async (req, res) => {
-    try {
-      const tenantId = String(req.params.tenantId || "").trim();
-      const patch = req.body?.config;
-      if (!patch || typeof patch !== "object") {
-        return res.status(400).json({ ok: false, error: "config must be an object" });
-      }
-      const current = await getJson(tenantConfigKey(tenantId), {});
-      const merged = { ...(current || {}), ...patch };
-      await setJson(tenantConfigKey(tenantId), merged);
-      const system = await getSystemConfig();
-      const effective = { ...system, ...merged };
-      res.json({ ok: true, tenant: merged, system, effective });
-    } catch (err) {
-      console.error("[OWNER] tenant config set error:", err);
-      res.status(500).json({ ok: false, error: "Failed to save tenant config" });
+async function handleSetTenantConfig(req, res) {
+  try {
+    const tenantId = String(req.params.tenantId || req.params.id || "").trim();
+    const patch = req.body?.config;
+    if (!patch || typeof patch !== "object") {
+      return res.status(400).json({ ok: false, error: "config must be an object" });
     }
+    const current = await getJson(tenantConfigKey(tenantId), {});
+    const merged = { ...(current || {}), ...patch };
+    await setJson(tenantConfigKey(tenantId), merged);
+    const system = await getSystemConfig();
+    const effective = { ...system, ...merged };
+    res.json({ ok: true, tenant: merged, system, effective });
+  } catch (err) {
+    console.error("[OWNER] tenant config set error:", err);
+    res.status(500).json({ ok: false, error: "Failed to save tenant config" });
   }
-);
+}
+
+router.get("/tenants/:tenantId/config", staffAuth, requireOwner, handleGetTenantConfig);
+router.get("/tenants/:id/config", staffAuth, requireOwner, handleGetTenantConfig);
+router.post("/tenants/:tenantId/config", staffAuth, requireOwner, handleSetTenantConfig);
+router.put("/tenants/:tenantId/config", staffAuth, requireOwner, handleSetTenantConfig);
+router.put("/tenants/:id/config", staffAuth, requireOwner, handleSetTenantConfig);
 
 // Reset the tenant bootstrap admin password (returns the new password one-time)
-router.post(
-  "/tenants/:tenantId/bootstrap/reset-password",
-  staffAuth,
-  requireOwner,
-  async (req, res) => {
-    try {
-      const tenantId = String(req.params.tenantId || "").trim();
-      let staffId = await getSetting(rootStaffKey(tenantId));
+async function handleResetAdminPassword(req, res) {
+  try {
+    const tenantId = String(req.params.tenantId || req.params.id || "").trim();
+    let staffId = await getSetting(rootStaffKey(tenantId));
 
-      let staff = null;
-      if (staffId) {
-        const idNum = Number(staffId);
-        if (Number.isFinite(idNum)) {
-          staff = await StaffUser.findByPk(idNum);
-        }
+    let staff = null;
+    if (staffId) {
+      const idNum = Number(staffId);
+      if (Number.isFinite(idNum)) {
+        staff = await StaffUser.findByPk(idNum);
       }
-
-      if (!staff) {
-        // best-effort fallback: oldest distributor user for the tenant
-        staff = await StaffUser.findOne({
-          where: { tenantId, role: "distributor" },
-          order: [["createdAt", "ASC"]],
-        });
-      }
-
-      if (!staff) {
-        return res.status(404).json({ ok: false, error: "Bootstrap admin not found" });
-      }
-
-      const password = randomPassword(16);
-      staff.passwordHash = await bcrypt.hash(password, 12);
-      await staff.save();
-
-      await OwnerSetting.upsert({
-        key: rootStaffKey(tenantId),
-        value: String(staff.id),
-      });
-
-      const base = adminUiBase();
-      const adminUiUrl = base ? `${base}/login?tenantId=${tenantId}` : `/login?tenantId=${tenantId}`;
-
-      res.json({ ok: true, username: staff.username, password, adminUiUrl });
-    } catch (err) {
-      console.error("[OWNER] bootstrap reset error:", err);
-      res.status(500).json({ ok: false, error: "Failed to reset password" });
     }
+
+    if (!staff) {
+      // best-effort fallback: oldest distributor user for the tenant
+      staff = await StaffUser.findOne({
+        where: { tenantId, role: "distributor" },
+        order: [["createdAt", "ASC"]],
+      });
+    }
+
+    if (!staff) {
+      return res.status(404).json({ ok: false, error: "Bootstrap admin not found" });
+    }
+
+    const password = randomPassword(16);
+    staff.passwordHash = await bcrypt.hash(password, 12);
+    await staff.save();
+
+    await OwnerSetting.upsert({
+      key: rootStaffKey(tenantId),
+      value: String(staff.id),
+    });
+
+    const base = adminUiBase();
+    const adminUiUrl = base ? `${base}/login?tenantId=${tenantId}` : `/login?tenantId=${tenantId}`;
+
+    res.json({ ok: true, username: staff.username, password, adminUiUrl });
+  } catch (err) {
+    console.error("[OWNER] bootstrap reset error:", err);
+    res.status(500).json({ ok: false, error: "Failed to reset password" });
   }
-);
+}
+
+router.post("/tenants/:tenantId/bootstrap/reset-password", staffAuth, requireOwner, handleResetAdminPassword);
+router.post("/tenants/:id/reset-admin-password", staffAuth, requireOwner, handleResetAdminPassword);
 
 // Issue credits directly to tenant wallet (owner only)
 router.post(
