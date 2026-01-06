@@ -87,12 +87,12 @@ function resolveTenantIdForOwner(req) {
   if (req.staff?.role !== "owner") {
     return req.staff?.tenantId || null;
   }
-  return normalizeTenantId(req.query?.tenantId || req.body?.tenantId);
+  return normalizeTenantId(req.query?.tenantId || req.body?.tenantId || req.staff?.tenantId);
 }
 
 function canPlaceOrder(staff) {
   if (!staff) return false;
-  return staff.role === "agent" || staff.role === "distributor";
+  return staff.role === "agent" || staff.role === "distributor" || staff.role === "owner";
 }
 
 async function getOwnerAddress(tenantId) {
@@ -207,7 +207,11 @@ router.post(
   async (req, res) => {
     try {
       if (!canPlaceOrder(req.staff)) {
-        return res.status(403).json({ ok: false, error: "Only agents or distributors can place orders" });
+        return res.status(403).json({ ok: false, error: "Only agents, distributors, or owners can place orders" });
+      }
+      const tenantId = req.staff?.role === "owner" ? resolveTenantIdForOwner(req) : req.staff?.tenantId;
+      if (!tenantId) {
+        return res.status(400).json({ ok: false, error: "tenantId is required" });
       }
       const { funAmount, btcAmount, btcRate, note } = req.body || {};
 
@@ -224,7 +228,7 @@ router.post(
         note: note || "",
         requestedBy: req.staff?.username || "agent",
         requestedById: req.staff?.id || null,
-        tenantId: req.staff?.tenantId,
+        tenantId,
       });
 
       if (note?.trim()) {
@@ -233,16 +237,15 @@ router.post(
           sender: req.staff?.username || "staff",
           senderRole: req.staff?.role || "staff",
           body: note.trim(),
-          tenantId: req.staff?.tenantId,
+          tenantId,
         });
       }
 
        // Send a plain-text inbox notification to owners in this tenant
        try {
-         const owners = await getOwners(req.staff?.tenantId);
+         const owners = await getOwners(tenantId);
          const senderId = req.staff?.id;
          const summary = `New funcoin order #${order.id} by ${order.requestedBy}: ${order.funAmount} FC -> ${order.btcAmount} BTC @ ${order.btcRate || "n/a"} (status: ${order.status})`;
-         const tenantId = req.staff?.tenantId;
          const ownerIds = owners.map((o) => o.id).filter(Boolean);
          for (const owner of owners) {
            if (!senderId || !owner.id) continue;
