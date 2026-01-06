@@ -53,7 +53,7 @@ async function getOrCreateWallet(userId, tenantId, currency = "FUN") {
 router.get(
   "/",
   staffAuth,
-  requireStaffRole("owner", "operator", "agent"),
+  requireStaffRole("owner", "operator", "agent", "distributor", "cashier"),
   async (req, res) => {
     try {
       const limit = Math.min(
@@ -84,7 +84,7 @@ router.get(
 router.post(
   "/",
   staffAuth,
-  requireStaffRole("owner", "operator", "agent"),
+  requireStaffRole("owner", "operator", "agent", "distributor", "cashier"),
   async (req, res) => {
     try {
       const { amount, bonusAmount, currency } = req.body;
@@ -118,10 +118,14 @@ router.post(
       const userCode = code; // mirrors code; not stored separately
       const totalCredit = valueAmount + valueBonus;
 
+      const tenantId = req.staff?.tenantId || null;
+      if (!tenantId) {
+        return res.status(400).json({ error: "Tenant ID is required" });
+      }
+
       const t = await sequelize.transaction({ transaction: req.transaction });
       let voucher;
       try {
-        const tenantId = req.staff?.tenantId || null;
         const pool = await TenantVoucherPool.findOne({
           where: { tenantId },
           transaction: t,
