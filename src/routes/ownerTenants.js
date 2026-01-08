@@ -762,4 +762,51 @@ router.post(
   }
 );
 
+
+// DELETE /api/v1/owner/tenants/:tenantId
+// Soft-delete: marks tenant inactive and deactivates all staff in that tenant.
+router.delete(
+  "/tenants/:tenantId",
+  staffAuth,
+  requireOwner,
+  async (req, res) => {
+    try {
+      const tenantId = String(req.params.tenantId || "").trim();
+      if (!tenantId) {
+        return res.status(400).json({ ok: false, error: "tenantId required" });
+      }
+
+      await sequelize.transaction(async (t) => {
+        const tenant = await Tenant.findByPk(tenantId, { transaction: t, lock: t.LOCK.UPDATE });
+        if (!tenant) {
+          const e = new Error("Tenant not found");
+          e.status = 404;
+          throw e;
+        }
+
+        tenant.status = "inactive";
+        await tenant.save({ transaction: t });
+
+        if (tenant.distributorId) {
+          const dist = await Distributor.findByPk(tenant.distributorId, { transaction: t, lock: t.LOCK.UPDATE });
+          if (dist) {
+            dist.status = "inactive";
+            await dist.save({ transaction: t });
+          }
+        }
+
+        await StaffUser.update(
+          { isActive: false },
+          { where: { tenantId }, transaction: t }
+        );
+      });
+
+      return res.json({ ok: true });
+    } catch (err) {
+      console.error("[OWNER] delete tenant error:", err);
+      return res.status(err.status || 500).json({ ok: false, error: err.message || "Failed" });
+    }
+  }
+);
+
 module.exports = router;
