@@ -68,6 +68,7 @@ async function ensureOwnerAccount() {
   // If you don't provide OWNER_PASSWORD, we generate one and print it ONCE to logs.
   // (For a demo environment this is fine. For a real deployment, set OWNER_PASSWORD.)
   const password = providedPassword || require("crypto").randomBytes(12).toString("base64url");
+
   const passwordHash = await bcrypt.hash(password, 12);
 
   // RLS is enabled on staff_users, so read+write must happen in a transaction
