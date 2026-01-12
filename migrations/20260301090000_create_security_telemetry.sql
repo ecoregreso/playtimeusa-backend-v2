@@ -11,7 +11,7 @@ END $$;
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'gen_random_uuid') THEN
-    EXECUTE $$
+    EXECUTE $ddl$
       CREATE TABLE IF NOT EXISTS security_events (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         ts timestamptz NOT NULL DEFAULT now(),
@@ -27,8 +27,8 @@ BEGIN
         severity smallint NOT NULL DEFAULT 1,
         details jsonb NOT NULL DEFAULT '{}'::jsonb
       )
-    $$;
-    EXECUTE $$
+    $ddl$;
+    EXECUTE $ddl$
       CREATE TABLE IF NOT EXISTS audit_log (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         ts timestamptz NOT NULL DEFAULT now(),
@@ -44,8 +44,8 @@ BEGIN
         prev_hash text NULL,
         hash text NOT NULL
       )
-    $$;
-    EXECUTE $$
+    $ddl$;
+    EXECUTE $ddl$
       CREATE TABLE IF NOT EXISTS security_alerts (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         ts timestamptz NOT NULL DEFAULT now(),
@@ -60,9 +60,9 @@ BEGIN
         closed_by uuid NULL,
         closed_at timestamptz NULL
       )
-    $$;
+    $ddl$;
   ELSE
-    EXECUTE $$
+    EXECUTE $ddl$
       CREATE TABLE IF NOT EXISTS security_events (
         id uuid PRIMARY KEY,
         ts timestamptz NOT NULL DEFAULT now(),
@@ -78,8 +78,8 @@ BEGIN
         severity smallint NOT NULL DEFAULT 1,
         details jsonb NOT NULL DEFAULT '{}'::jsonb
       )
-    $$;
-    EXECUTE $$
+    $ddl$;
+    EXECUTE $ddl$
       CREATE TABLE IF NOT EXISTS audit_log (
         id uuid PRIMARY KEY,
         ts timestamptz NOT NULL DEFAULT now(),
@@ -95,8 +95,8 @@ BEGIN
         prev_hash text NULL,
         hash text NOT NULL
       )
-    $$;
-    EXECUTE $$
+    $ddl$;
+    EXECUTE $ddl$
       CREATE TABLE IF NOT EXISTS security_alerts (
         id uuid PRIMARY KEY,
         ts timestamptz NOT NULL DEFAULT now(),
@@ -111,7 +111,7 @@ BEGIN
         closed_by uuid NULL,
         closed_at timestamptz NULL
       )
-    $$;
+    $ddl$;
   END IF;
 END $$;
 
