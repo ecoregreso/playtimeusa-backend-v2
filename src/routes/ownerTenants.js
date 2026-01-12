@@ -140,6 +140,13 @@ function clampCents(v) {
   return Math.max(0, Math.floor(n));
 }
 
+async function withRequestTransaction(req, handler) {
+  if (req?.transaction) {
+    return sequelize.transaction({ transaction: req.transaction }, handler);
+  }
+  return sequelize.transaction(handler);
+}
+
 async function tryAuditLog(payload) {
   try {
     await writeAuditLog(payload);
@@ -378,7 +385,7 @@ router.post(
     }
 
     try {
-      const result = await sequelize.transaction(async (t) => {
+      const result = await withRequestTransaction(req, async (t) => {
         // 1) create tenant
         const tenant = await Tenant.create(
           {
@@ -651,7 +658,7 @@ router.post(
         return res.status(400).json({ ok: false, error: "amountCents must be > 0" });
       }
 
-      const result = await sequelize.transaction(async (t) => {
+      const result = await withRequestTransaction(req, async (t) => {
         let wallet = await TenantWallet.findOne({
           where: { tenantId },
           transaction: t,
@@ -717,7 +724,7 @@ router.post(
         return res.status(400).json({ ok: false, error: "amountCents must be > 0" });
       }
 
-      const result = await sequelize.transaction(async (t) => {
+      const result = await withRequestTransaction(req, async (t) => {
         let wallet = await TenantWallet.findOne({
           where: { tenantId },
           transaction: t,
@@ -891,7 +898,7 @@ router.delete(
       }
 
       let beforeStatus = null;
-      await sequelize.transaction(async (t) => {
+      await withRequestTransaction(req, async (t) => {
         const tenant = await Tenant.findByPk(tenantId, { transaction: t, lock: t.LOCK.UPDATE });
         if (!tenant) {
           const e = new Error("Tenant not found");
