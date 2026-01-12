@@ -8,6 +8,7 @@ const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/le
 const { signAccessToken, signRefreshToken } = require("../utils/jwt");
 const { requireAuth } = require("../middleware/auth");
 const { initTenantContext } = require("../middleware/tenantContext");
+const { emitSecurityEvent, maskCode } = require("../lib/security/events");
 
 const router = express.Router();
 
@@ -84,15 +85,61 @@ async function touchPlayerSession(userId, req) {
 router.post("/login", async (req, res) => {
   const code = (req.body?.code || req.body?.userCode || "").trim();
   const pin = (req.body?.pin || "").trim();
-  const tenantId = req.body?.tenantId || req.body?.tenant_id || null;
+  let tenantId = req.body?.tenantId || req.body?.tenant_id || null;
 
-  if (!code || !pin || !tenantId) {
+  if (!code || !pin) {
+    emitSecurityEvent({
+      tenantId: tenantId || null,
+      actorType: "player",
+      actorId: null,
+      ip: req.auditContext?.ip || null,
+      userAgent: req.auditContext?.userAgent || null,
+      method: req.method,
+      path: req.originalUrl,
+      requestId: req.requestId,
+      eventType: "player_login_failed",
+      severity: 2,
+      details: {
+        maskedCode: maskCode(code, 2),
+      },
+    });
     return res
       .status(400)
-      .json({ ok: false, error: "code, pin, and tenantId are required" });
+      .json({ ok: false, error: "code and pin are required" });
   }
 
   try {
+    if (!tenantId) {
+      const voucherTenant = await Voucher.findOne({
+        where: {
+          code: { [Op.iLike]: code },
+          pin: { [Op.iLike]: pin },
+        },
+        attributes: ["tenantId"],
+      });
+      if (!voucherTenant) {
+        emitSecurityEvent({
+          tenantId: null,
+          actorType: "player",
+          actorId: null,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          method: req.method,
+          path: req.originalUrl,
+          requestId: req.requestId,
+          eventType: "player_login_failed",
+          severity: 2,
+          details: {
+            maskedCode: maskCode(code, 2),
+          },
+        });
+        return res
+          .status(404)
+          .json({ ok: false, error: "Voucher not found or invalid pin" });
+      }
+      tenantId = voucherTenant.tenantId;
+    }
+
     return await initTenantContext(
       req,
       res,
@@ -106,6 +153,7 @@ router.post("/login", async (req, res) => {
         // First, look for a NEW voucher (primary login path)
         let voucher = await Voucher.findOne({
           where: {
+            tenantId,
             code: { [Op.iLike]: code },
             pin: { [Op.iLike]: pin },
             status: { [Op.in]: ["new", "NEW"] },
@@ -120,6 +168,21 @@ router.post("/login", async (req, res) => {
       });
 
       if (!user || user.role !== "player") {
+        emitSecurityEvent({
+          tenantId,
+          actorType: "player",
+          actorId: null,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          method: req.method,
+          path: req.originalUrl,
+          requestId: req.requestId,
+          eventType: "player_login_failed",
+          severity: 2,
+          details: {
+            maskedCode: maskCode(code, 2),
+          },
+        });
         return res
           .status(404)
           .json({ ok: false, error: "Voucher not found or invalid pin" });
@@ -127,6 +190,21 @@ router.post("/login", async (req, res) => {
 
       const validPin = await bcrypt.compare(pin, user.passwordHash || "");
       if (!validPin) {
+        emitSecurityEvent({
+          tenantId,
+          actorType: "player",
+          actorId: user.id || null,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          method: req.method,
+          path: req.originalUrl,
+          requestId: req.requestId,
+          eventType: "player_login_failed",
+          severity: 2,
+          details: {
+            maskedCode: maskCode(code, 2),
+          },
+        });
         return res
           .status(404)
           .json({ ok: false, error: "Voucher not found or invalid pin" });

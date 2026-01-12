@@ -9,6 +9,7 @@ const {
 } = require("../middleware/staffAuth");
 const { ROLE_DEFAULT_PERMISSIONS } = require("../constants/permissions");
 const { initTenantContext } = require("../middleware/tenantContext");
+const { emitSecurityEvent } = require("../lib/security/events");
 
 const router = express.Router();
 
@@ -28,6 +29,19 @@ router.post("/login", async (req, res) => {
     const usernameTrim = username ? String(username).trim() : "";
 
     if (!usernameTrim || !password) {
+      emitSecurityEvent({
+        tenantId: tenantId || null,
+        actorType: "staff",
+        actorId: null,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        method: req.method,
+        path: req.originalUrl,
+        requestId: req.requestId,
+        eventType: "staff_login_failed",
+        severity: 2,
+        details: { username: usernameTrim || "unknown" },
+      });
       return res
         .status(400)
         .json({ ok: false, error: "username and password are required" });
@@ -55,16 +69,55 @@ router.post("/login", async (req, res) => {
               },
         });
         if (!staff || !staff.isActive) {
+          emitSecurityEvent({
+            tenantId: tenantId || null,
+            actorType: "staff",
+            actorId: null,
+            ip: req.auditContext?.ip || null,
+            userAgent: req.auditContext?.userAgent || null,
+            method: req.method,
+            path: req.originalUrl,
+            requestId: req.requestId,
+            eventType: "staff_login_failed",
+            severity: 2,
+            details: { username: usernameTrim },
+          });
           return res.status(401).json({ ok: false, error: "Invalid credentials" });
         }
 
         const ok = await bcrypt.compare(password, staff.passwordHash);
         if (!ok) {
+          emitSecurityEvent({
+            tenantId: tenantId || null,
+            actorType: "staff",
+            actorId: null,
+            ip: req.auditContext?.ip || null,
+            userAgent: req.auditContext?.userAgent || null,
+            method: req.method,
+            path: req.originalUrl,
+            requestId: req.requestId,
+            eventType: "staff_login_failed",
+            severity: 2,
+            details: { username: usernameTrim },
+          });
           return res.status(401).json({ ok: false, error: "Invalid credentials" });
         }
 
         const permissions = buildPermissions(staff);
         const token = signStaffToken({ ...staff.toJSON(), permissions });
+        emitSecurityEvent({
+          tenantId: staff.tenantId || tenantId || null,
+          actorType: staff.role === "owner" ? "owner" : "staff",
+          actorId: null,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          method: req.method,
+          path: req.originalUrl,
+          requestId: req.requestId,
+          eventType: "staff_login_success",
+          severity: 1,
+          details: { username: staff.username },
+        });
 
         // record session for monitoring
         try {

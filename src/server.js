@@ -29,6 +29,8 @@ const gamesRoutes = require("./routes/games");
 const ownerTenantsRoutes = require("./routes/ownerTenants");
 const publicBrandRoutes = require("./routes/publicBrand");
 const { buildNotImplementedRouter } = require("./routes/notImplemented");
+const ownerSecurityRoutes = require("./routes/ownerSecurity");
+const { requestIdMiddleware } = require("./lib/security/requestId");
 
 const {
   StaffUser,
@@ -51,6 +53,11 @@ const crypto = require("crypto");
 
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
+const AUDIT_HMAC_SECRET = process.env.AUDIT_HMAC_SECRET || "";
+if (NODE_ENV === "production" && !AUDIT_HMAC_SECRET) {
+  console.error("[SECURITY] AUDIT_HMAC_SECRET is required in production");
+  process.exit(1);
+}
 /**
  * CORS origin list
  * - FRONTEND_ORIGIN supports comma-separated origins
@@ -77,6 +84,7 @@ app.set("trust proxy", 1);
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(requestIdMiddleware);
 
 function normalizeErrorPayload(payload) {
   if (
@@ -265,6 +273,7 @@ app.use("/api/v1/games", gamesRoutes);
 app.use("/api/v1", financeRoutes);
 app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
 app.use("/api/v1/owner", ownerTenantsRoutes);
+app.use("/api/v1/owner/security", ownerSecurityRoutes);
 app.use("/api/v1", buildNotImplementedRouter());
 
 // Sequelize sync is disabled by default; run migrations instead.

@@ -22,6 +22,8 @@ const { staffAuth, requirePermission } = require("../middleware/staffAuth");
 const { PERMISSIONS, ROLE_DEFAULT_PERMISSIONS, ROLES } = require("../constants/permissions");
 const { getJson, setJson, safeParseJson, setSetting, getSetting } = require("../utils/ownerSettings");
 const { wipeAllData } = require("../services/wipeService");
+const { emitSecurityEvent } = require("../lib/security/events");
+const { writeAuditLog } = require("../lib/security/audit");
 
 const router = express.Router();
 
@@ -91,7 +93,43 @@ async function ensureUniqueUsername({ tenantId, desired }, transaction) {
 function requireOwner(req, res, next) {
   if (!req.staff) return res.status(401).json({ ok: false, error: "Unauthorized" });
   if (req.staff.role !== "owner") {
+    emitSecurityEvent({
+      tenantId: req.staff?.tenantId || null,
+      actorType: "staff",
+      actorId: null,
+      ip: req.auditContext?.ip || null,
+      userAgent: req.auditContext?.userAgent || null,
+      method: req.method,
+      path: req.originalUrl,
+      requestId: req.requestId,
+      eventType: "access_violation",
+      severity: 3,
+      details: {
+        reason: "owner_route_forbidden",
+        staffId: String(req.staff?.id || ""),
+        path: req.originalUrl,
+      },
+    });
     return res.status(403).json({ ok: false, error: "Owner access required" });
+  }
+  if (req.staff?.tenantId) {
+    emitSecurityEvent({
+      tenantId: req.staff.tenantId,
+      actorType: "owner",
+      actorId: null,
+      ip: req.auditContext?.ip || null,
+      userAgent: req.auditContext?.userAgent || null,
+      method: req.method,
+      path: req.originalUrl,
+      requestId: req.requestId,
+      eventType: "access_violation",
+      severity: 3,
+      details: {
+        reason: "owner_token_scoped_to_tenant",
+        tenantId: req.staff.tenantId,
+        path: req.originalUrl,
+      },
+    });
   }
   return next();
 }
@@ -100,6 +138,14 @@ function clampCents(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.floor(n));
+}
+
+async function tryAuditLog(payload) {
+  try {
+    await writeAuditLog(payload);
+  } catch (err) {
+    console.warn("[OWNER] audit log failed:", err.message || err);
+  }
 }
 
 const DEFAULT_SYSTEM_CONFIG = {
@@ -461,6 +507,28 @@ router.post(
         };
       });
 
+      await tryAuditLog({
+        tenantId: result.tenant?.id || null,
+        actorType: "owner",
+        actorId: null,
+        action: "tenant.create",
+        entityType: "tenant",
+        entityId: result.tenant?.id || null,
+        before: null,
+        after: {
+          tenant: {
+            id: result.tenant?.id || null,
+            name: result.tenant?.name || null,
+            status: result.tenant?.status || null,
+          },
+          distributor: {
+            id: result.distributor?.id || null,
+            status: result.distributor?.status || null,
+          },
+        },
+        requestId: req.requestId || null,
+      });
+
       return res.status(201).json({ ok: true, ...result });
     } catch (err) {
       console.error("[OWNER] tenant create error:", err);
@@ -546,6 +614,18 @@ async function handleResetAdminPassword(req, res) {
     const base = adminUiBase();
     const adminUiUrl = base ? `${base}/login?tenantId=${tenantId}` : `/login?tenantId=${tenantId}`;
 
+    await tryAuditLog({
+      tenantId,
+      actorType: "owner",
+      actorId: null,
+      action: "tenant.reset_admin_password",
+      entityType: "staff",
+      entityId: null,
+      before: { staffId: staff.id, username: staff.username },
+      after: { staffId: staff.id, username: staff.username, reset: true },
+      requestId: req.requestId || null,
+    });
+
     res.json({ ok: true, username: staff.username, password, adminUiUrl });
   } catch (err) {
     console.error("[OWNER] bootstrap reset error:", err);
@@ -584,7 +664,8 @@ router.post(
           );
         }
 
-        wallet.balanceCents = Number(wallet.balanceCents || 0) + amountCents;
+        const beforeBalance = Number(wallet.balanceCents || 0);
+        wallet.balanceCents = beforeBalance + amountCents;
         await wallet.save({ transaction: t });
 
         await CreditLedger.create(
@@ -598,10 +679,22 @@ router.post(
           { transaction: t }
         );
 
-        return wallet;
+        return { wallet, beforeBalance };
       });
 
-      res.json({ ok: true, wallet: result });
+      await tryAuditLog({
+        tenantId,
+        actorType: "owner",
+        actorId: null,
+        action: "tenant.issue_credits",
+        entityType: "tenant_wallet",
+        entityId: null,
+        before: { balanceCents: result.beforeBalance },
+        after: { balanceCents: result.wallet.balanceCents, amountCents },
+        requestId: req.requestId || null,
+      });
+
+      res.json({ ok: true, wallet: result.wallet });
     } catch (err) {
       console.error("[OWNER] issue credits error:", err);
       res.status(500).json({ ok: false, error: "Failed to issue credits" });
@@ -643,6 +736,7 @@ router.post(
           throw e;
         }
 
+        const beforeWalletBalance = Number(wallet.balanceCents || 0);
         let pool = await TenantVoucherPool.findOne({
           where: { tenantId },
           transaction: t,
@@ -655,6 +749,7 @@ router.post(
           );
         }
 
+        const beforePoolBalance = Number(pool.poolBalanceCents || 0);
         wallet.balanceCents = Number(wallet.balanceCents || 0) - amountCents;
         pool.poolBalanceCents = Number(pool.poolBalanceCents || 0) + amountCents;
 
@@ -672,10 +767,29 @@ router.post(
           { transaction: t }
         );
 
-        return { wallet, pool };
+        return { wallet, pool, beforeWalletBalance, beforePoolBalance };
       });
 
-      res.json({ ok: true, ...result });
+      await tryAuditLog({
+        tenantId,
+        actorType: "owner",
+        actorId: null,
+        action: "tenant.allocate_voucher_pool",
+        entityType: "tenant_voucher_pool",
+        entityId: null,
+        before: {
+          walletBalanceCents: result.beforeWalletBalance,
+          poolBalanceCents: result.beforePoolBalance,
+        },
+        after: {
+          walletBalanceCents: result.wallet.balanceCents,
+          poolBalanceCents: result.pool.poolBalanceCents,
+          amountCents,
+        },
+        requestId: req.requestId || null,
+      });
+
+      res.json({ ok: true, wallet: result.wallet, pool: result.pool });
     } catch (err) {
       if (err?.message === "INSUFFICIENT_TENANT_BALANCE") {
         return res.status(400).json({ ok: false, error: "Insufficient tenant balance" });
@@ -776,6 +890,7 @@ router.delete(
         return res.status(400).json({ ok: false, error: "tenantId required" });
       }
 
+      let beforeStatus = null;
       await sequelize.transaction(async (t) => {
         const tenant = await Tenant.findByPk(tenantId, { transaction: t, lock: t.LOCK.UPDATE });
         if (!tenant) {
@@ -784,6 +899,7 @@ router.delete(
           throw e;
         }
 
+        beforeStatus = tenant.status || null;
         tenant.status = "inactive";
         await tenant.save({ transaction: t });
 
@@ -799,6 +915,18 @@ router.delete(
           { isActive: false },
           { where: { tenantId }, transaction: t }
         );
+      });
+
+      await tryAuditLog({
+        tenantId,
+        actorType: "owner",
+        actorId: null,
+        action: "tenant.disable",
+        entityType: "tenant",
+        entityId: tenantId,
+        before: { status: beforeStatus },
+        after: { status: "inactive" },
+        requestId: req.requestId || null,
       });
 
       return res.json({ ok: true });

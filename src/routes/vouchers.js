@@ -9,6 +9,7 @@ const { generateVoucherQrPng } = require("../utils/qr");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 const { logEvent } = require("../services/auditService");
+const { emitSecurityEvent, maskCode } = require("../lib/security/events");
 
 const router = express.Router();
 
@@ -118,10 +119,25 @@ router.post(
       const userCode = code; // mirrors code; not stored separately
       const totalCredit = valueAmount + valueBonus;
 
-      const tenantId = req.staff?.tenantId || null;
+      let tenantId = req.staff?.tenantId || null;
+      const ownerTenantId =
+        req.staff?.role === "owner"
+          ? (typeof req.body?.tenantId === "string"
+              ? req.body.tenantId.trim()
+              : req.body?.tenantId) || null
+          : null;
+      if (ownerTenantId) {
+        tenantId = ownerTenantId;
+      }
+
       if (!tenantId) {
         return res.status(400).json({ error: "Tenant ID is required" });
       }
+
+      const currencyCode = (typeof currency === "string" && currency.trim()
+        ? currency.trim()
+        : "FUN"
+      ).toUpperCase();
 
       const t = await sequelize.transaction({ transaction: req.transaction });
       let voucher;
@@ -167,8 +183,13 @@ router.post(
                 amount: valueAmount,
                 bonusAmount: valueBonus,
                 totalCredit,
+                currency: currencyCode,
                 status: "new",
                 createdBy: req.staff?.id || null,
+                metadata: {
+                  userCode,
+                  source: "admin_panel",
+                },
               },
               { transaction: t }
             );
@@ -192,6 +213,15 @@ router.post(
         qrPath = await generateVoucherQrPng({ code: voucher.code, pin, userCode });
       } catch (qrErr) {
         console.error("[VOUCHERS] QR generation failed:", qrErr);
+      }
+
+      if (qrPath) {
+        voucher.metadata = { ...(voucher.metadata || {}), qrPath };
+        try {
+          await voucher.save();
+        } catch (metaErr) {
+          console.error("[VOUCHERS] failed to persist qr metadata:", metaErr);
+        }
       }
 
       const response = {
@@ -229,7 +259,7 @@ router.post(
       await logEvent({
         eventType: "VOUCHER_ISSUE",
         success: true,
-        tenantId: req.staff?.tenantId || null,
+        tenantId,
         requestId: req.requestId,
         actorType: "staff",
         actorId: req.staff?.id || null,
@@ -254,7 +284,7 @@ router.post(
       await logEvent({
         eventType: "VOUCHER_ISSUE",
         success: false,
-        tenantId: req.staff?.tenantId || null,
+        tenantId: tenantId || req.staff?.tenantId || null,
         requestId: req.requestId,
         actorType: "staff",
         actorId: req.staff?.id || null,
@@ -312,6 +342,21 @@ router.post(
       });
 
       if (!voucher) {
+        emitSecurityEvent({
+          tenantId: req.auth?.tenantId || null,
+          actorType: "player",
+          actorId: req.user?.id || null,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          method: req.method,
+          path: req.originalUrl,
+          requestId: req.requestId,
+          eventType: "voucher_pin_failed",
+          severity: 2,
+          details: {
+            maskedCode: maskCode(code, 2),
+          },
+        });
         await logEvent({
           eventType: "VOUCHER_REDEEM",
           success: false,
