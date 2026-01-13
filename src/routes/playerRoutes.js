@@ -12,6 +12,25 @@ const { emitSecurityEvent, maskCode } = require("../lib/security/events");
 
 const router = express.Router();
 
+async function resolveTenantForVoucher(code, pin) {
+  if (!code || !pin) return null;
+  return sequelize.transaction(async (t) => {
+    await sequelize.query("SET LOCAL app.role = 'owner'", { transaction: t });
+    await sequelize.query("SET LOCAL app.user_id = 'voucher_login'", { transaction: t });
+    await sequelize.query("SET LOCAL app.tenant_id = ''", { transaction: t });
+    const voucher = await Voucher.findOne({
+      where: {
+        code: { [Op.iLike]: code },
+        pin: { [Op.iLike]: pin },
+      },
+      attributes: ["tenantId"],
+      order: [["createdAt", "DESC"]],
+      transaction: t,
+    });
+    return voucher?.tenantId || null;
+  });
+}
+
 // Simple ping for debugging
 router.get("/ping", (req, res) => {
   res.json({
@@ -109,35 +128,30 @@ router.post("/login", async (req, res) => {
   }
 
   try {
+    const resolvedTenantId = await resolveTenantForVoucher(code, pin);
+    if (resolvedTenantId) {
+      tenantId = resolvedTenantId;
+    }
+
     if (!tenantId) {
-      const voucherTenant = await Voucher.findOne({
-        where: {
-          code: { [Op.iLike]: code },
-          pin: { [Op.iLike]: pin },
+      emitSecurityEvent({
+        tenantId: null,
+        actorType: "player",
+        actorId: null,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        method: req.method,
+        path: req.originalUrl,
+        requestId: req.requestId,
+        eventType: "player_login_failed",
+        severity: 2,
+        details: {
+          maskedCode: maskCode(code, 2),
         },
-        attributes: ["tenantId"],
       });
-      if (!voucherTenant) {
-        emitSecurityEvent({
-          tenantId: null,
-          actorType: "player",
-          actorId: null,
-          ip: req.auditContext?.ip || null,
-          userAgent: req.auditContext?.userAgent || null,
-          method: req.method,
-          path: req.originalUrl,
-          requestId: req.requestId,
-          eventType: "player_login_failed",
-          severity: 2,
-          details: {
-            maskedCode: maskCode(code, 2),
-          },
-        });
-        return res
-          .status(404)
-          .json({ ok: false, error: "Voucher not found or invalid pin" });
-      }
-      tenantId = voucherTenant.tenantId;
+      return res
+        .status(404)
+        .json({ ok: false, error: "Voucher not found or invalid pin" });
     }
 
     return await initTenantContext(
