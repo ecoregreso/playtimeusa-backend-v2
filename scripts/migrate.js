@@ -1,5 +1,7 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(process.cwd(), '.env') });
+
 const fs = require("fs");
-const path = require("path");
 const { Client } = require("pg");
 
 async function ensureSchemaTable(client) {
@@ -24,7 +26,8 @@ async function runMigrations() {
     throw new Error("DATABASE_URL is required");
   }
 
-  const client = new Client({ connectionString });
+  const sslRequired = String(process.env.PGSSLMODE||"").toLowerCase()==="require";
+  const client = new Client({ connectionString, ssl: sslRequired ? { rejectUnauthorized: false } : undefined });
   await client.connect();
 
   try {
