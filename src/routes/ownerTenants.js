@@ -21,7 +21,7 @@ const { sequelize } = require("../db");
 const { staffAuth, requirePermission } = require("../middleware/staffAuth");
 const { PERMISSIONS, ROLE_DEFAULT_PERMISSIONS, ROLES } = require("../constants/permissions");
 const { getJson, setJson, safeParseJson, setSetting, getSetting } = require("../utils/ownerSettings");
-const { wipeAllData } = require("../services/wipeService");
+const { wipeAllData, wipeTenantData } = require("../services/wipeService");
 const { emitSecurityEvent } = require("../lib/security/events");
 const { writeAuditLog } = require("../lib/security/audit");
 
@@ -885,7 +885,7 @@ router.post(
 
 
 // DELETE /api/v1/owner/tenants/:tenantId
-// Soft-delete: marks tenant inactive and deactivates all staff in that tenant.
+// Hard-delete: removes tenant record and all tenant data.
 router.delete(
   "/tenants/:tenantId",
   staffAuth,
@@ -898,6 +898,7 @@ router.delete(
       }
 
       let beforeStatus = null;
+      let distributorId = null;
       await withRequestTransaction(req, async (t) => {
         const tenant = await Tenant.findByPk(tenantId, { transaction: t, lock: t.LOCK.UPDATE });
         if (!tenant) {
@@ -907,32 +908,39 @@ router.delete(
         }
 
         beforeStatus = tenant.status || null;
-        tenant.status = "inactive";
-        await tenant.save({ transaction: t });
+        distributorId = tenant.distributorId || null;
 
-        if (tenant.distributorId) {
-          const dist = await Distributor.findByPk(tenant.distributorId, { transaction: t, lock: t.LOCK.UPDATE });
-          if (dist) {
-            dist.status = "inactive";
-            await dist.save({ transaction: t });
+        await wipeTenantData(tenantId, {
+          transaction: t,
+          resetTenantBalances: false,
+        });
+
+        await TenantWallet.destroy({ where: { tenantId }, transaction: t });
+        await TenantVoucherPool.destroy({ where: { tenantId }, transaction: t });
+        await OwnerSetting.destroy({
+          where: { key: { [Op.like]: `tenant:${tenantId}:%` } },
+          transaction: t,
+        });
+
+        await Tenant.destroy({ where: { id: tenantId }, transaction: t });
+
+        if (distributorId) {
+          const remaining = await Tenant.count({ where: { distributorId }, transaction: t });
+          if (remaining === 0) {
+            await Distributor.destroy({ where: { id: distributorId }, transaction: t });
           }
         }
-
-        await StaffUser.update(
-          { isActive: false },
-          { where: { tenantId }, transaction: t }
-        );
       });
 
       await tryAuditLog({
         tenantId,
         actorType: "owner",
         actorId: null,
-        action: "tenant.disable",
+        action: "tenant.delete",
         entityType: "tenant",
         entityId: tenantId,
         before: { status: beforeStatus },
-        after: { status: "inactive" },
+        after: { deleted: true },
         requestId: req.requestId || null,
       });
 
