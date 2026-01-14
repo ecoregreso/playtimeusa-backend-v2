@@ -208,6 +208,7 @@ router.get(
         activePlayerCount,
         totalStaffCount,
         totalPlayerCount,
+        totalPlayersCount,
       ] = await Promise.all([
         // All vouchers *created* in the period
         Voucher.findAll({
@@ -362,6 +363,13 @@ router.get(
             actorType: "user",
           },
         }),
+        User.count({
+          where: {
+            role: "player",
+          },
+          distinct: true,
+          col: "username",
+        }),
       ]);
 
       // --- VOUCHERS ---
@@ -454,6 +462,7 @@ router.get(
       }
 
       const playersStats = {
+        total: Number(totalPlayersCount || 0),
         new: playerNewCount,
         active: activeSet.size,
         activeFromGames,
@@ -548,6 +557,8 @@ router.get(
           activePlayers: Number(activePlayerCount || 0),
           totalStaff: Number(totalStaffCount || 0),
           totalPlayers: Number(totalPlayerCount || 0),
+          totalStaffSessions: Number(totalStaffCount || 0),
+          totalPlayerSessions: Number(totalPlayerCount || 0),
           staffSessions: (staffSessions || []).map((s) => s.toJSON()),
           playerSessions: (playerSessions || []).map((s) => s.toJSON()),
         },

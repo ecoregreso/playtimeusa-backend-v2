@@ -22,18 +22,36 @@ router.get(
       const status = (req.query.status || "all").toLowerCase();
       const limit = Math.min(parseInt(req.query.limit || "100", 10), 500);
 
-      const where = {};
-      if (actorType !== "all") where.actorType = actorType === "user" ? "user" : "staff";
-      if (status === "active") where.revokedAt = { [Op.is]: null };
-      if (status === "revoked") where.revokedAt = { [Op.not]: null };
+      const baseWhere = {};
+      if (actorType !== "all") baseWhere.actorType = actorType === "user" ? "user" : "staff";
 
-      const sessions = await Session.findAll({
-        where,
-        order: [["lastSeenAt", "DESC"]],
-        limit,
+      const listWhere = { ...baseWhere };
+      if (status === "active") listWhere.revokedAt = { [Op.is]: null };
+      if (status === "revoked") listWhere.revokedAt = { [Op.not]: null };
+
+      const [sessions, totalCount, activeCount] = await Promise.all([
+        Session.findAll({
+          where: listWhere,
+          order: [["lastSeenAt", "DESC"]],
+          limit,
+        }),
+        Session.count({ where: baseWhere }),
+        Session.count({ where: { ...baseWhere, revokedAt: { [Op.is]: null } } }),
+      ]);
+
+      const total = Number(totalCount || 0);
+      const active = Number(activeCount || 0);
+
+      res.json({
+        ok: true,
+        sessions,
+        summary: {
+          actorType,
+          total,
+          active,
+          revoked: Math.max(0, total - active),
+        },
       });
-
-      res.json({ ok: true, sessions });
     } catch (err) {
       console.error("[ADMIN_SESSIONS] list error:", err);
       res.status(500).json({ ok: false, error: "Failed to load sessions" });
