@@ -8,6 +8,7 @@
     "start": "node scripts/bootstrap.js && node src/server.js",
     "test": "echo \"No tests defined yet\" && exit 0",
     "migrate": "node scripts/migrate.js",
+    "staff:create": "node scripts/create_staff.js",
     "test:rls": "bash scripts/test_rls.sh",
     "smoke": "node scripts/smoke.js",
     "openapi:lint": "node scripts/openapi-lint.js",

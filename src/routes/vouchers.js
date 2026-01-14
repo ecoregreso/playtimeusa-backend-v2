@@ -1,5 +1,7 @@
 // src/routes/vouchers.js
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const { Op } = require("sequelize");
 const { sequelize } = require("../db");
 const { requireAuth, requireRole } = require("../middleware/auth");
@@ -49,6 +51,53 @@ async function getOrCreateWallet(userId, tenantId, currency = "FUN") {
 
   return wallet;
 }
+
+// GET /vouchers/qr/:id.png (admin) – serve QR by voucher id
+router.get(
+  "/qr/:id.png",
+  staffAuth,
+  requireStaffRole("owner", "operator", "agent", "distributor", "cashier"),
+  async (req, res) => {
+    try {
+      const voucher = await Voucher.findByPk(req.params.id);
+      if (!voucher) {
+        return res.status(404).json({ error: "Voucher not found" });
+      }
+
+      let qrPath = voucher.metadata?.qrPath || null;
+      if (!qrPath) {
+        try {
+          qrPath = await generateVoucherQrPng({
+            code: voucher.code,
+            pin: voucher.pin,
+            userCode: voucher.metadata?.userCode || null,
+          });
+          voucher.metadata = { ...(voucher.metadata || {}), qrPath };
+          await voucher.save();
+        } catch (qrErr) {
+          console.error("[VOUCHERS] QR generation failed:", qrErr);
+          return res.status(500).json({ error: "Failed to generate QR" });
+        }
+      }
+
+      const projectRoot = path.resolve(__dirname, "..", "..");
+      const qrRoot = path.resolve(projectRoot, "exports", "qr");
+      const resolved = path.resolve(projectRoot, qrPath);
+      if (!resolved.startsWith(`${qrRoot}${path.sep}`)) {
+        return res.status(400).json({ error: "Invalid QR path" });
+      }
+
+      await fs.promises.access(resolved);
+      return res.sendFile(resolved);
+    } catch (err) {
+      if (err && err.code === "ENOENT") {
+        return res.status(404).json({ error: "QR not found" });
+      }
+      console.error("[VOUCHERS] GET /qr error:", err);
+      return res.status(500).json({ error: "Failed to load QR" });
+    }
+  }
+);
 
 // GET /vouchers (admin) – list latest vouchers
 router.get(

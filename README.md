@@ -19,6 +19,22 @@ This is a clean Postgres/Sequelize backend skeleton for the Playtime USA funcoin
 - **Bets**: Simple RNG demo endpoint
 - **Ledger Events**: Canonical telemetry stream (bets, wins, deposits, vouchers, errors)
 
+## Quickstart (local)
+
+```
+npm i
+npm run migrate
+npm run dev
+npm run staff:create -- admin YourPassword owner
+curl -s http://localhost:3000/api/health
+curl -s -X POST http://localhost:3000/api/v1/staff/login -H "Content-Type: application/json" -d '{"username":"x","password":"y"}'
+```
+
+Optional smoke check:
+```
+API_BASE=http://localhost:3000 ./scripts/smoke_api.sh
+```
+
 ## Endpoints (v1)
 
 Base path: `/api/v1`
@@ -151,6 +167,7 @@ the table list, context rules, and test instructions.
 - `npm run migrate` — apply SQL migrations
 - `npm run test:rls` — run the tenant isolation integration test
 - `npm run smoke` — run a minimal sanity check
+- `npm run staff:create -- <username> <password> [role]` — create a staff user
 
 ## Changelog
 

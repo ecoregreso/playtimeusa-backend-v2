@@ -422,6 +422,57 @@ router.post("/login", async (req, res) => {
   }
 });
 
+// POST /api/v1/player/logout
+// Revokes the active session so it no longer counts as live.
+router.post("/logout", requireAuth, async (req, res) => {
+  try {
+    const rawSessionId = req.headers["x-session-id"] || req.body?.sessionId || null;
+    const sessionId = rawSessionId ? String(rawSessionId).trim() : null;
+    const now = new Date();
+
+    const baseWhere = {
+      actorType: "user",
+      userId: String(req.user.id),
+      revokedAt: { [Op.is]: null },
+    };
+    if (req.user.tenantId) {
+      baseWhere.tenantId = req.user.tenantId;
+    }
+
+    let revokedCount = 0;
+    if (sessionId) {
+      const [count] = await Session.update(
+        { revokedAt: now },
+        { where: { ...baseWhere, id: sessionId }, transaction: req.transaction || undefined }
+      );
+      revokedCount = Number(count || 0);
+    }
+
+    if (!revokedCount) {
+      const [count] = await Session.update(
+        { revokedAt: now },
+        { where: baseWhere, transaction: req.transaction || undefined }
+      );
+      revokedCount = Number(count || 0);
+    }
+
+    await recordLedgerEvent({
+      ts: now,
+      playerId: req.user.id,
+      sessionId: sessionId || null,
+      actionId: sessionId || null,
+      eventType: "LOGOUT",
+      source: "player.logout",
+      meta: buildRequestMeta(req, { revokedCount }),
+    });
+
+    return res.json({ ok: true, revoked: revokedCount });
+  } catch (err) {
+    console.error("[PLAYER_LOGOUT] error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to logout player" });
+  }
+});
+
 // GET /api/v1/player/me (requires player access token)
 router.get("/me", requireAuth, async (req, res) => {
   try {

@@ -2,7 +2,7 @@
 // Safe startup bootstrap:
 // - ensures Sequelize tables exist for a fresh DB
 // - applies SQL migrations (idempotent)
-// - ensures an owner account exists (for owner-portal login)
+// - does NOT create staff users by default
 
 require("dotenv").config();
 
@@ -117,7 +117,11 @@ async function main() {
   await sequelize.authenticate();
   await ensureBaseTables();
   await runMigrations();
-  await ensureOwnerAccount();
+  if (process.env.BOOTSTRAP_OWNER === "true") {
+    await ensureOwnerAccount();
+  } else {
+    console.log("[bootstrap] skipping owner account creation (set BOOTSTRAP_OWNER=true to enable)");
+  }
   await sequelize.close();
   console.log("[bootstrap] done.");
 }

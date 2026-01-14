@@ -62,20 +62,18 @@ if (NODE_ENV === "production" && !AUDIT_HMAC_SECRET) {
  * CORS origin list
  * - FRONTEND_ORIGIN supports comma-separated origins
  * - CORS_ORIGINS is accepted as a fallback
- * - DEFAULT_ORIGINS covers the common dev ports
+ * - Dev/test allow all origins; prod requires allowlist
  */
-const DEFAULT_ORIGINS = ["http://localhost:5173", "http://localhost:5174"];
-const FRONTEND_ORIGINS_RAW = (
-  process.env.FRONTEND_ORIGIN ||
-  process.env.CORS_ORIGINS ||
-  DEFAULT_ORIGINS.join(",")
-)
+const DEFAULT_ORIGINS =
+  NODE_ENV === "production" ? [] : ["http://localhost:5173", "http://localhost:5174"];
+const FRONTEND_ORIGINS_RAW = (process.env.CORS_ORIGINS || process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const ALLOW_ALL = FRONTEND_ORIGINS_RAW.includes("*");
-const FRONTEND_ORIGINS = [...new Set(FRONTEND_ORIGINS_RAW.filter((x) => x !== "*"))];
+const FRONTEND_ORIGINS = [...new Set(FRONTEND_ORIGINS_RAW)];
+const ALLOW_ALL_ORIGINS = NODE_ENV !== "production";
+const ALLOWED_ORIGINS = FRONTEND_ORIGINS.length ? FRONTEND_ORIGINS : DEFAULT_ORIGINS;
 
 const app = express();
 
@@ -172,9 +170,9 @@ app.use(
       // No origin usually means server-to-server, curl, postman
       if (!origin) return cb(null, true);
 
-      if (ALLOW_ALL) return cb(null, true);
+      if (ALLOW_ALL_ORIGINS) return cb(null, true);
 
-      if (FRONTEND_ORIGINS.includes(origin)) return cb(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
 
       return cb(new Error(`Not allowed by CORS: ${origin}`));
     },
@@ -220,13 +218,27 @@ app.use((req, res, next) => {
   next();
 });
 
-// Healthcheck
-app.get("/health", (req, res) => {
-  res.json({
+function buildHealthPayload() {
+  const timestamp = new Date().toISOString();
+  return {
+    ok: true,
     status: "ok",
     env: NODE_ENV,
-    time: new Date().toISOString(),
-  });
+    uptimeSeconds: Math.floor(process.uptime()),
+    timestamp,
+    time: timestamp,
+  };
+}
+
+// Healthcheck
+app.get("/health", (req, res) => {
+  res.json(buildHealthPayload());
+});
+app.get("/api/health", (req, res) => {
+  res.json(buildHealthPayload());
+});
+app.get("/api/v1/health", (req, res) => {
+  res.json(buildHealthPayload());
 });
 
 // Routes
