@@ -11,6 +11,11 @@ CREATE TABLE IF NOT EXISTS distributors (
 -- Safety: in case distributors table already exists without a default, set one.
 ALTER TABLE IF EXISTS distributors
   ALTER COLUMN id SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS distributors
+  ALTER COLUMN "createdAt" SET DEFAULT NOW(),
+  ALTER COLUMN "updatedAt" SET DEFAULT NOW();
+UPDATE distributors SET "createdAt" = NOW() WHERE "createdAt" IS NULL;
+UPDATE distributors SET "updatedAt" = NOW() WHERE "updatedAt" IS NULL;
 
 CREATE TABLE IF NOT EXISTS tenants (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -26,7 +31,11 @@ CREATE INDEX IF NOT EXISTS tenants_distributor_idx ON tenants (distributor_id);
 
 -- Safety: in case tenants table already exists without a default, set one before inserts.
 ALTER TABLE IF EXISTS tenants
-  ALTER COLUMN id SET DEFAULT gen_random_uuid();
+  ALTER COLUMN id SET DEFAULT gen_random_uuid(),
+  ALTER COLUMN "createdAt" SET DEFAULT NOW(),
+  ALTER COLUMN "updatedAt" SET DEFAULT NOW();
+UPDATE tenants SET "createdAt" = NOW() WHERE "createdAt" IS NULL;
+UPDATE tenants SET "updatedAt" = NOW() WHERE "updatedAt" IS NULL;
 
 CREATE TABLE IF NOT EXISTS tenant_wallets (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
