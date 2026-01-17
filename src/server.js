@@ -65,15 +65,22 @@ if (NODE_ENV === "production" && !AUDIT_HMAC_SECRET) {
  * - CORS_ORIGINS is accepted as a fallback
  * - Dev/test allow all origins; prod requires allowlist
  */
+const PROD_DEFAULT_ORIGINS = [
+  "https://www.playtimeusa.net",
+  "https://playtimeusa.net",
+  "https://playtimeusa.netlify.app",
+];
 const DEFAULT_ORIGINS =
-  NODE_ENV === "production" ? [] : ["http://localhost:5173", "http://localhost:5174"];
+  NODE_ENV === "production"
+    ? PROD_DEFAULT_ORIGINS
+    : ["http://localhost:5173", "http://localhost:5174", ...PROD_DEFAULT_ORIGINS];
 const FRONTEND_ORIGINS_RAW = (process.env.CORS_ORIGINS || process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
 const FRONTEND_ORIGINS = [...new Set(FRONTEND_ORIGINS_RAW)];
-const ALLOW_ALL_ORIGINS = NODE_ENV !== "production";
+const ALLOW_ALL_ORIGINS = NODE_ENV !== "production" || process.env.ALLOW_ALL_ORIGINS === "true";
 const ALLOWED_ORIGINS = FRONTEND_ORIGINS.length ? FRONTEND_ORIGINS : DEFAULT_ORIGINS;
 
 const app = express();
