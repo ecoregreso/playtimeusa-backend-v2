@@ -6,8 +6,10 @@ const { Op } = require("sequelize");
 const { sequelize } = require("../db");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { staffAuth } = require("../middleware/staffAuth");
+const { PERMISSIONS } = require("../constants/permissions");
 const { Voucher, Wallet, Transaction, User, TenantVoucherPool } = require("../models");
 const { generateVoucherQrPng } = require("../utils/qr");
+const { getJson } = require("../utils/ownerSettings");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 const { logEvent } = require("../services/auditService");
@@ -22,6 +24,80 @@ function requireStaffRole(...roles) {
       return res.status(403).json({ error: "Forbidden: insufficient role" });
     }
     next();
+  };
+}
+
+function requireStaffPermission(permission) {
+  return (req, res, next) => {
+    const perms = req.staff?.permissions || [];
+    if (!perms.includes(permission)) {
+      return res.status(403).json({ error: "Forbidden: insufficient permissions" });
+    }
+    return next();
+  };
+}
+
+const SYSTEM_CONFIG_KEY = "system_config";
+function tenantConfigKey(tenantId) {
+  return `tenant:${tenantId}:config`;
+}
+
+const DEFAULT_SYSTEM_CONFIG = {
+  maintenanceMode: false,
+  purchaseOrdersEnabled: true,
+  vouchersEnabled: true,
+  depositsEnabled: true,
+  withdrawalsEnabled: true,
+  messagingEnabled: true,
+  pushEnabled: true,
+};
+
+async function getEffectiveConfig(tenantId) {
+  const system = await getJson(SYSTEM_CONFIG_KEY, DEFAULT_SYSTEM_CONFIG);
+  if (!tenantId) return { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}) };
+  const tenant = await getJson(tenantConfigKey(tenantId), {});
+  return { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}), ...(tenant || {}) };
+}
+
+function normalizeTenantId(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  return trimmed || null;
+}
+
+function resolveTenantId(req) {
+  if (req.staff?.role !== "owner") {
+    return req.staff?.tenantId || null;
+  }
+  const raw = req.query?.tenantId || req.body?.tenantId || req.staff?.tenantId || null;
+  return normalizeTenantId(raw);
+}
+
+function sanitizeVoucher(voucher) {
+  const safe = voucher.toJSON ? voucher.toJSON() : { ...voucher };
+  if (safe && typeof safe === "object") {
+    delete safe.pin;
+  }
+  return safe;
+}
+
+function enforceVouchersEnabled() {
+  return async (req, res, next) => {
+    try {
+      const tenantId = resolveTenantId(req);
+      const cfg = await getEffectiveConfig(tenantId);
+      req.effectiveConfig = cfg;
+      if (cfg.maintenanceMode && req.staff?.role !== "owner") {
+        return res.status(503).json({ error: "System is in maintenance mode" });
+      }
+      if (!cfg.vouchersEnabled && req.staff?.role !== "owner") {
+        return res.status(403).json({ error: "Vouchers are currently disabled" });
+      }
+      return next();
+    } catch (err) {
+      console.error("[VOUCHERS] config gate error:", err);
+      return res.status(500).json({ error: "Failed to load tenant config" });
+    }
   };
 }
 
@@ -52,11 +128,64 @@ async function getOrCreateWallet(userId, tenantId, currency = "FUN") {
   return wallet;
 }
 
+async function creditVoucherToWallet({ voucher, userId, staff, transaction }) {
+  const t = transaction;
+  const currency = voucher.currency || "FUN";
+  const wallet = await getOrCreateWallet(userId, voucher.tenantId, currency);
+  const amount = Number(voucher.amount || 0);
+  const bonus = Number(voucher.bonusAmount || 0);
+  const before = Number(wallet.balance || 0);
+
+  wallet.balance = before + amount;
+  wallet.bonusPending = Number(wallet.bonusPending || 0) + bonus;
+  await wallet.save({ transaction: t });
+
+  await Transaction.create(
+    {
+      tenantId: voucher.tenantId,
+      walletId: wallet.id,
+      type: "voucher_credit",
+      amount,
+      balanceBefore: before,
+      balanceAfter: wallet.balance,
+      reference: `voucher:${voucher.code}`,
+      metadata: {
+        voucherId: voucher.id,
+        bonusPending: bonus,
+        redeemedByStaffId: staff?.id || null,
+        redeemerRole: staff?.role || null,
+      },
+      createdByUserId: staff?.id || null,
+    },
+    { transaction: t }
+  );
+
+  const bonusResult = await applyPendingBonusIfEligible({
+    wallet,
+    transaction: t,
+    reference: `bonus:${voucher.code}:redeem`,
+    metadata: { voucherId: voucher.id, redeemedByStaffId: staff?.id || null },
+  });
+
+  voucher.status = "redeemed";
+  voucher.redeemedAt = new Date();
+  voucher.redeemedByUserId = userId;
+  voucher.metadata = {
+    ...(voucher.metadata || {}),
+    redeemedByStaffId: staff?.id || null,
+    redeemedByRole: staff?.role || null,
+  };
+  await voucher.save({ transaction: t });
+
+  return { wallet, bonusResult };
+}
+
 // GET /vouchers/qr/:id.png (admin) – serve QR by voucher id
 router.get(
   "/qr/:id.png",
   staffAuth,
   requireStaffRole("owner", "operator", "agent", "distributor", "cashier"),
+  requireStaffPermission(PERMISSIONS.VOUCHER_READ),
   async (req, res) => {
     try {
       const voucher = await Voucher.findByPk(req.params.id);
@@ -104,6 +233,8 @@ router.get(
   "/",
   staffAuth,
   requireStaffRole("owner", "operator", "agent", "distributor", "cashier"),
+  requireStaffPermission(PERMISSIONS.VOUCHER_READ),
+  enforceVouchersEnabled(),
   async (req, res) => {
     try {
       const limit = Math.min(
@@ -135,6 +266,8 @@ router.post(
   "/",
   staffAuth,
   requireStaffRole("owner", "operator", "agent", "distributor", "cashier"),
+  requireStaffPermission(PERMISSIONS.VOUCHER_WRITE),
+  enforceVouchersEnabled(),
   async (req, res) => {
     try {
       const { amount, bonusAmount, currency } = req.body;
@@ -347,6 +480,186 @@ router.post(
         meta: { reason: "exception", message: err.message },
       });
       return res.status(500).json({ error: "Failed to create voucher" });
+    }
+  }
+);
+
+// POST /vouchers/staff/redeem – staff-assisted redeem into a player's wallet
+router.post(
+  "/staff/redeem",
+  staffAuth,
+  requireStaffRole("owner", "operator", "agent", "distributor", "cashier"),
+  requireStaffPermission(PERMISSIONS.VOUCHER_WRITE),
+  enforceVouchersEnabled(),
+  async (req, res) => {
+    const { code, pin, userId } = req.body || {};
+    const tenantId = resolveTenantId(req);
+
+    if (!code || !pin || !userId) {
+      return res.status(400).json({ error: "code, pin, and userId are required" });
+    }
+
+    const t = await sequelize.transaction({ transaction: req.transaction });
+    try {
+      const voucher = await Voucher.findOne({
+        where: {
+          tenantId,
+          code: { [Op.iLike]: code },
+          pin: { [Op.iLike]: pin },
+          status: { [Op.in]: ["new", "NEW"] },
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (!voucher) {
+        await t.rollback();
+        return res.status(404).json({ error: "Voucher not found or already redeemed" });
+      }
+
+      const { wallet } = await creditVoucherToWallet({
+        voucher,
+        userId,
+        staff: req.staff,
+        transaction: t,
+      });
+
+      await recordLedgerEvent({
+        ts: new Date(),
+        playerId: userId,
+        cashierId: req.staff?.role === "cashier" ? req.staff.id : null,
+        agentId: req.staff?.role === "cashier" ? null : req.staff?.id || null,
+        sessionId: null,
+        actionId: voucher.id,
+        eventType: "VOUCHER_REDEEMED",
+        amountCents: toCents(Number(voucher.amount || 0) + Number(voucher.bonusAmount || 0)),
+        source: "vouchers.staff_redeem",
+        meta: {
+          ...(buildRequestMeta(req, { staffRole: req.staff?.role || null }) || {}),
+          voucherId: voucher.id,
+          code: voucher.code,
+          amountCents: toCents(voucher.amount || 0),
+          bonusCents: toCents(voucher.bonusAmount || 0),
+          staffId: req.staff?.id || null,
+        },
+      });
+
+      await logEvent({
+        eventType: "VOUCHER_REDEEM",
+        success: true,
+        tenantId,
+        requestId: req.requestId,
+        actorType: "staff",
+        actorId: req.staff?.id || null,
+        actorRole: req.staff?.role || null,
+        actorUsername: req.staff?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 200,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: { code: voucher.code, voucherId: voucher.id, userId },
+      });
+
+      await t.commit();
+      const safeVoucher = sanitizeVoucher(voucher);
+      return res.json({ ok: true, voucher: safeVoucher, wallet });
+    } catch (err) {
+      await t.rollback();
+      console.error("[VOUCHERS] POST /staff/redeem error:", err);
+      return res.status(500).json({ error: "Failed to redeem voucher" });
+    }
+  }
+);
+
+// POST /vouchers/terminate – staff cashout/terminate a voucher (ledgered as withdraw)
+router.post(
+  "/terminate",
+  staffAuth,
+  requireStaffRole("owner", "operator", "agent", "distributor", "cashier"),
+  requireStaffPermission(PERMISSIONS.VOUCHER_TERMINATE),
+  enforceVouchersEnabled(),
+  async (req, res) => {
+    const { code, reason } = req.body || {};
+    const tenantId = resolveTenantId(req);
+    if (!code) {
+      return res.status(400).json({ error: "code is required" });
+    }
+
+    const t = await sequelize.transaction({ transaction: req.transaction });
+    try {
+      const voucher = await Voucher.findOne({
+        where: {
+          tenantId,
+          code: { [Op.iLike]: code },
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (!voucher) {
+        await t.rollback();
+        return res.status(404).json({ error: "Voucher not found" });
+      }
+
+      if (String(voucher.status || "").toLowerCase() === "terminated") {
+        await t.rollback();
+        return res.status(400).json({ error: "Voucher already terminated" });
+      }
+
+      voucher.status = "terminated";
+      voucher.metadata = {
+        ...(voucher.metadata || {}),
+        terminatedAt: new Date().toISOString(),
+        terminatedByStaffId: req.staff?.id || null,
+        terminatedReason: reason || null,
+      };
+      await voucher.save({ transaction: t });
+
+      const totalCredit =
+        Number(voucher.totalCredit || 0) ||
+        Number(voucher.amount || 0) + Number(voucher.bonusAmount || 0);
+
+      await recordLedgerEvent({
+        ts: new Date(),
+        playerId: null,
+        cashierId: req.staff?.role === "cashier" ? req.staff.id : null,
+        agentId: req.staff?.role === "cashier" ? null : req.staff?.id || null,
+        eventType: "WITHDRAW",
+        actionId: voucher.id,
+        amountCents: toCents(-totalCredit),
+        source: "vouchers.terminate",
+        meta: {
+          ...(buildRequestMeta(req, { staffRole: req.staff?.role || null }) || {}),
+          voucherId: voucher.id,
+          code: voucher.code,
+          reason: reason || "terminated",
+        },
+      });
+
+      await logEvent({
+        eventType: "VOUCHER_TERMINATE",
+        success: true,
+        tenantId,
+        requestId: req.requestId,
+        actorType: "staff",
+        actorId: req.staff?.id || null,
+        actorRole: req.staff?.role || null,
+        actorUsername: req.staff?.username || null,
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: 200,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        meta: { voucherId: voucher.id, code: voucher.code, reason },
+      });
+
+      await t.commit();
+      return res.json({ ok: true, voucher: sanitizeVoucher(voucher) });
+    } catch (err) {
+      await t.rollback();
+      console.error("[VOUCHERS] POST /terminate error:", err);
+      return res.status(500).json({ error: "Failed to terminate voucher" });
     }
   }
 );

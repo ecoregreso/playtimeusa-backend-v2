@@ -27,6 +27,7 @@ const staffPushRoutes = require("./routes/staffPush");
 const purchaseOrdersRoutes = require("./routes/purchaseOrders");
 const gamesRoutes = require("./routes/games");
 const ownerTenantsRoutes = require("./routes/ownerTenants");
+const tenantConfigRoutes = require("./routes/tenantConfig");
 const publicBrandRoutes = require("./routes/publicBrand");
 const { buildNotImplementedRouter } = require("./routes/notImplemented");
 const ownerSecurityRoutes = require("./routes/ownerSecurity");
@@ -163,22 +164,48 @@ app.use("/api/v1", (req, res, next) => {
   next();
 });
 
-// CORS
-app.use(
-  cors({
+
+  // CORS
+
+  const corsOptions = {
+
     origin: (origin, cb) => {
+
       // No origin usually means server-to-server, curl, postman
+
       if (!origin) return cb(null, true);
+
+
 
       if (ALLOW_ALL_ORIGINS) return cb(null, true);
 
+
+
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
 
-      return cb(new Error(`Not allowed by CORS: ${origin}`));
+
+
+      return cb(new Error(`Not allowed by CORS: `));
+
     },
+
     credentials: true,
-  })
-);
+
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+
+    allowedHeaders: ["Content-Type", "Authorization"],
+
+    maxAge: 86400,
+
+  };
+
+
+
+  app.use(cors(corsOptions));
+
+  app.options("*", cors(corsOptions));
+
+
 
 // Logging
 if (NODE_ENV !== "test") {
@@ -286,6 +313,7 @@ app.use("/api/v1", financeRoutes);
 app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
 app.use("/api/v1/owner", ownerTenantsRoutes);
 app.use("/api/v1/owner/security", ownerSecurityRoutes);
+app.use("/api/v1/config", tenantConfigRoutes);
 app.use("/api/v1", buildNotImplementedRouter());
 
 // Sequelize sync is disabled by default; run migrations instead.
