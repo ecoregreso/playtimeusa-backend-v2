@@ -6,8 +6,8 @@ const { Op } = require("sequelize");
 const { sequelize } = require("../db");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { staffAuth } = require("../middleware/staffAuth");
-const { PERMISSIONS } = require("../constants/permissions");
-const { Voucher, Wallet, Transaction, User, TenantVoucherPool } = require("../models");
+const { PERMISSIONS, ROLE_DEFAULT_PERMISSIONS } = require("../constants/permissions");
+const { Voucher, Wallet, Transaction, User, TenantVoucherPool, TenantWallet } = require("../models");
 const { generateVoucherQrPng } = require("../utils/qr");
 const { getJson } = require("../utils/ownerSettings");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
@@ -27,9 +27,15 @@ function requireStaffRole(...roles) {
   };
 }
 
+function getStaffPermissions(staff) {
+  if (Array.isArray(staff?.permissions)) return staff.permissions;
+  const role = staff?.role || null;
+  return ROLE_DEFAULT_PERMISSIONS[role] || [];
+}
+
 function requireStaffPermission(permission) {
   return (req, res, next) => {
-    const perms = req.staff?.permissions || [];
+    const perms = getStaffPermissions(req.staff);
     if (!perms.includes(permission)) {
       return res.status(403).json({ error: "Forbidden: insufficient permissions" });
     }
@@ -324,13 +330,46 @@ router.post(
       const t = await sequelize.transaction({ transaction: req.transaction });
       let voucher;
       try {
-        const pool = await TenantVoucherPool.findOne({
+        let pool = await TenantVoucherPool.findOne({
           where: { tenantId },
           transaction: t,
           lock: t.LOCK.UPDATE,
         });
 
-        if (!pool || Number(pool.poolBalanceCents || 0) < toCents(totalCredit)) {
+        if (!pool) {
+          pool = await TenantVoucherPool.create(
+            { tenantId, poolBalanceCents: 0, currency: currencyCode },
+            { transaction: t }
+          );
+        }
+
+        // Auto-top-up pool from tenant wallet if needed
+        let wallet = await TenantWallet.findOne({
+          where: { tenantId },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+        if (!wallet) {
+          wallet = await TenantWallet.create(
+            { tenantId, balanceCents: 0, currency: currencyCode },
+            { transaction: t }
+          );
+        }
+
+        const neededCents = toCents(totalCredit);
+        const poolBalance = Number(pool.poolBalanceCents || 0);
+
+        if (poolBalance < neededCents) {
+          const shortfall = neededCents - poolBalance;
+          const walletBalance = Number(wallet.balanceCents || 0);
+          if (walletBalance >= shortfall) {
+            wallet.balanceCents = walletBalance - shortfall;
+            pool.poolBalanceCents = poolBalance + shortfall;
+            await wallet.save({ transaction: t });
+          }
+        }
+
+        if (Number(pool.poolBalanceCents || 0) < neededCents) {
           await logEvent({
             eventType: "VOUCHER_ISSUE",
             success: false,
