@@ -47,7 +47,7 @@ const Session = sequelize.define(
   {
     tableName: "sessions",
     timestamps: true,
-    indexes: [{ fields: ["tenantId"] }],
+    indexes: [{ fields: ["tenant_id"] }],
   }
 );
 

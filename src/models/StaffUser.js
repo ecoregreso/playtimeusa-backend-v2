@@ -69,9 +69,9 @@ const StaffUser = sequelize.define(
     tableName: "staff_users",
     timestamps: true,
     indexes: [
-      { fields: ["tenantId"] },
-      { fields: ["distributorId"] },
-      { fields: ["tenantId", "username"], unique: true },
+      { fields: ["tenant_id"] },
+      { fields: ["distributor_id"] },
+      { fields: ["tenant_id", "username"], unique: true },
       { fields: ["email"] },
     ],
   }

@@ -29,7 +29,7 @@ const TenantVoucherPool = sequelize.define(
   {
     tableName: "tenant_voucher_pools",
     timestamps: true,
-    indexes: [{ fields: ["tenantId"] }],
+    indexes: [{ fields: ["tenant_id"] }],
   }
 );
 

@@ -29,7 +29,7 @@ const TenantWallet = sequelize.define(
   {
     tableName: "tenant_wallets",
     timestamps: true,
-    indexes: [{ fields: ["tenantId"] }],
+    indexes: [{ fields: ["tenant_id"] }],
   }
 );
 

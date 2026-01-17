@@ -35,8 +35,8 @@ const GameConfig = sequelize.define(
     tableName: "game_configs",
     timestamps: true,
     indexes: [
-      { fields: ["tenantId"] },
-      { fields: ["tenantId", "gameKey"], unique: true },
+      { fields: ["tenant_id"] },
+      { fields: ["tenant_id", "gameKey"], unique: true },
       { fields: ["provider"] },
     ],
   }

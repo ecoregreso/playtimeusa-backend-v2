@@ -68,7 +68,7 @@ const SessionSnapshot = sequelize.define(
     tableName: "session_snapshots",
     timestamps: true,
     indexes: [
-      { fields: ["tenantId"] },
+      { fields: ["tenant_id"] },
       { fields: ["startedAt"] },
       { fields: ["endedAt"] },
       { fields: ["playerId", "startedAt"] },

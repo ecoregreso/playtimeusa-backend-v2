@@ -82,7 +82,7 @@ const WithdrawalIntent = sequelize.define(
   {
     tableName: "withdrawal_intents",
     timestamps: true,
-    indexes: [{ fields: ["tenantId"] }],
+    indexes: [{ fields: ["tenant_id"] }],
   }
 );
 

@@ -58,8 +58,8 @@ const Voucher = sequelize.define('Voucher', {
   tableName: 'vouchers',
   timestamps: true,
   indexes: [
-    { fields: ["tenantId"] },
-    { fields: ["tenantId", "code"], unique: true },
+    { fields: ["tenant_id"] },
+    { fields: ["tenant_id", "code"], unique: true },
   ],
 });
 

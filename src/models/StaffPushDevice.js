@@ -62,7 +62,7 @@ const StaffPushDevice = sequelize.define(
     tableName: "staff_push_devices",
     timestamps: true,
     indexes: [
-      { fields: ["tenantId"] },
+      { fields: ["tenant_id"] },
       { fields: ["staffId"] },
       { fields: ["tokenHash"] },
     ],

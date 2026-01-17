@@ -49,7 +49,7 @@ const Transaction = sequelize.define('Transaction', {
 }, {
   tableName: 'transactions',
   timestamps: true,
-  indexes: [{ fields: ["tenantId"] }],
+  indexes: [{ fields: ["tenant_id"] }],
 });
 
 Wallet.hasMany(Transaction, {

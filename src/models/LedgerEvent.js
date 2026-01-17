@@ -79,10 +79,10 @@ const LedgerEvent = sequelize.define(
       { fields: ["ts"] },
       { fields: ["playerId", "ts"] },
       { fields: ["sessionId", "ts"] },
-      { fields: ["tenantId", "actionId", "eventType"], unique: true },
+      { fields: ["tenant_id", "actionId", "eventType"], unique: true },
       { fields: ["gameKey", "ts"] },
       { fields: ["eventType", "ts"] },
-      { fields: ["tenantId"] },
+      { fields: ["tenant_id"] },
     ],
   }
 );

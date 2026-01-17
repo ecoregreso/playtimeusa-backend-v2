@@ -63,7 +63,7 @@ const GameRound = sequelize.define('GameRound', {
 }, {
   tableName: 'game_rounds',
   timestamps: true,
-  indexes: [{ fields: ["tenantId"] }],
+  indexes: [{ fields: ["tenant_id"] }],
 });
 
 // relations

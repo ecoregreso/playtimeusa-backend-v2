@@ -44,7 +44,7 @@ const ApiErrorEvent = sequelize.define(
     tableName: "api_error_events",
     timestamps: true,
     indexes: [
-      { fields: ["tenantId"] },
+      { fields: ["tenant_id"] },
       { fields: ["ts"] },
       { fields: ["route", "ts"] },
     ],

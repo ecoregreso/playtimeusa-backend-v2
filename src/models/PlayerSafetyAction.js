@@ -47,7 +47,7 @@ const PlayerSafetyAction = sequelize.define(
     tableName: "player_safety_actions",
     timestamps: true,
     indexes: [
-      { fields: ["tenantId"] },
+      { fields: ["tenant_id"] },
       { fields: ["sessionId", "createdAt"] },
       { fields: ["playerId", "createdAt"] },
       { fields: ["actionType", "createdAt"] },

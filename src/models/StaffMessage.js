@@ -49,7 +49,7 @@ const StaffMessage = sequelize.define(
   {
     tableName: "staff_messages",
     timestamps: false,
-    indexes: [{ fields: ["tenantId"] }],
+    indexes: [{ fields: ["tenant_id"] }],
   }
 );
 

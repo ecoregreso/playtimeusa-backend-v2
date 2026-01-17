@@ -41,7 +41,7 @@ const PurchaseOrderMessage = sequelize.define(
   {
     tableName: "purchase_order_messages",
     timestamps: true,
-    indexes: [{ fields: ["orderId"] }, { fields: ["tenantId"] }],
+    indexes: [{ fields: ["orderId"] }, { fields: ["tenant_id"] }],
   }
 );
 

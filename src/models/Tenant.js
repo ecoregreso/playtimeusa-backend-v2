@@ -28,7 +28,7 @@ const Tenant = sequelize.define(
   {
     tableName: "tenants",
     timestamps: true,
-    indexes: [{ fields: ["name"] }, { fields: ["distributorId"] }],
+    indexes: [{ fields: ["name"] }, { fields: ["distributor_id"] }],
   }
 );
 

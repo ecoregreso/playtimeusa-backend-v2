@@ -40,9 +40,9 @@ const User = sequelize.define('User', {
   tableName: 'users',
   timestamps: true,
   indexes: [
-    { fields: ["tenantId"] },
-    { fields: ["tenantId", "email"], unique: true },
-    { fields: ["tenantId", "username"], unique: true },
+    { fields: ["tenant_id"] },
+    { fields: ["tenant_id", "email"], unique: true },
+    { fields: ["tenant_id", "username"], unique: true },
     { fields: ['role'] },
   ],
 });

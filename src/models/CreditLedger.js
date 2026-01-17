@@ -37,7 +37,7 @@ const CreditLedger = sequelize.define(
   {
     tableName: "credit_ledger",
     timestamps: true,
-    indexes: [{ fields: ["tenantId"] }, { fields: ["actionType"] }],
+    indexes: [{ fields: ["tenant_id"] }, { fields: ["action_type"] }],
   }
 );
 

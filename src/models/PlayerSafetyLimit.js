@@ -36,7 +36,7 @@ const PlayerSafetyLimit = sequelize.define(
     tableName: "player_safety_limits",
     timestamps: true,
     indexes: [
-      { fields: ["tenantId"] },
+      { fields: ["tenant_id"] },
       { fields: ["sessionId"] },
       { fields: ["playerId"] },
     ],

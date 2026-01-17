@@ -52,7 +52,7 @@ const SupportTicket = sequelize.define(
     tableName: "support_tickets",
     timestamps: true,
     indexes: [
-      { fields: ["tenantId"] },
+      { fields: ["tenant_id"] },
       { fields: ["status"] },
       { fields: ["assignedStaffId"] },
       { fields: ["createdAt"] },

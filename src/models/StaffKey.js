@@ -42,7 +42,7 @@ const StaffKey = sequelize.define(
   {
     tableName: "staff_keys",
     timestamps: true,
-    indexes: [{ fields: ["tenantId"] }],
+    indexes: [{ fields: ["tenant_id"] }],
   }
 );
 

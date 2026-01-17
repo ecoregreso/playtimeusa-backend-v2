@@ -36,7 +36,7 @@ const Wallet = sequelize.define('Wallet', {
 }, {
   tableName: 'wallets',
   timestamps: true,
-  indexes: [{ fields: ["tenantId"] }],
+  indexes: [{ fields: ["tenant_id"] }],
 });
 
 User.hasOne(Wallet, {

@@ -66,7 +66,7 @@ const PurchaseOrder = sequelize.define(
   {
     tableName: "purchase_orders",
     timestamps: true,
-    indexes: [{ fields: ["requestedBy"] }, { fields: ["tenantId"] }],
+    indexes: [{ fields: ["requestedBy"] }, { fields: ["tenant_id"] }],
   }
 );
 
