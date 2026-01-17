@@ -200,7 +200,7 @@ app.use("/api/v1", (req, res, next) => {
 
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-session-id", "X-Session-Id"],
 
     maxAge: 86400,
 
