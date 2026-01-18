@@ -29,6 +29,9 @@ const Distributor = require("./Distributor");
 const TenantWallet = require("./TenantWallet");
 const TenantVoucherPool = require("./TenantVoucherPool");
 const CreditLedger = require("./CreditLedger");
+const Jackpot = require("./Jackpot");
+const JackpotEvent = require("./JackpotEvent");
+const JackpotContribution = require("./JackpotContribution");
 
 Tenant.hasMany(User, { foreignKey: "tenantId" });
 User.belongsTo(Tenant, { foreignKey: "tenantId" });
@@ -105,6 +108,15 @@ CreditLedger.belongsTo(Tenant, { foreignKey: "tenantId" });
 Distributor.hasMany(Tenant, { foreignKey: "distributorId" });
 Tenant.belongsTo(Distributor, { foreignKey: "distributorId" });
 
+Tenant.hasMany(Jackpot, { foreignKey: "tenantId" });
+Jackpot.belongsTo(Tenant, { foreignKey: "tenantId" });
+
+Jackpot.hasMany(JackpotEvent, { foreignKey: "jackpotId" });
+JackpotEvent.belongsTo(Jackpot, { foreignKey: "jackpotId" });
+
+Jackpot.hasMany(JackpotContribution, { foreignKey: "jackpotId" });
+JackpotContribution.belongsTo(Jackpot, { foreignKey: "jackpotId" });
+
 module.exports = {
   sequelize,
   Sequelize,
@@ -135,4 +147,7 @@ module.exports = {
   TenantWallet,
   TenantVoucherPool,
   CreditLedger,
+  Jackpot,
+  JackpotEvent,
+  JackpotContribution,
 };

@@ -7,6 +7,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 const safetyEngine = require("../services/playerSafetyEngine");
+const jackpotService = require("../services/jackpotService");
 
 const router = express.Router();
 
@@ -204,6 +205,14 @@ router.post(
         betCents: toCents(amount),
         source: "games.bet",
         meta: betMeta,
+      });
+
+      // Jackpot contributions & triggers
+      await jackpotService.processBet({
+        tenantId: req.auth?.tenantId || null,
+        playerId: req.user.id,
+        betAmount: amount,
+        gameId,
       });
 
       return res.status(201).json({
