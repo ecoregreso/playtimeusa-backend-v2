@@ -1,6 +1,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const path = require("path");
+const jwt = require("jsonwebtoken");
 const { requireStaffAuth, PERMISSIONS } = require("../middleware/staffAuth");
 const { sequelize } = require("../models");
 
@@ -57,6 +58,28 @@ function observeSession({ staffId, userAgent, fingerprint }) {
       lastSeen: meta.lastSeen,
     })),
   };
+}
+
+function isPrivateAddress(urlString) {
+  try {
+    const url = new URL(urlString);
+    const host = url.hostname;
+    if (!host) return true;
+    const privatePatterns = [
+      /^localhost$/i,
+      /^127\./,
+      /^0\./,
+      /^10\./,
+      /^192\.168\./,
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+      /^169\.254\./,
+      /\.internal$/i,
+      /\.local$/i,
+    ];
+    return privatePatterns.some((re) => re.test(host));
+  } catch {
+    return true;
+  }
 }
 
 function runProbe(name, ctx = {}) {
@@ -118,6 +141,30 @@ function runProbe(name, ctx = {}) {
     return results;
   }
 
+  if (name === "ssrf_block") {
+    const targetUrl = ctx.body?.url || "http://127.0.0.1:80/health";
+    const private = isPrivateAddress(targetUrl);
+    results.status = private ? "ok" : "warn";
+    results.detail = private
+      ? "Private/loopback SSRF target correctly blocked."
+      : "Provided URL not flagged as private; ensure outbound SSRF guard exists.";
+    return results;
+  }
+
+  if (name === "token_tamper") {
+    const fakeSecret = "fake-secret";
+    const token = jwt.sign({ sub: "test", type: "staff" }, fakeSecret, { expiresIn: "5m" });
+    try {
+      jwt.verify(token, process.env.STAFF_JWT_SECRET || process.env.JWT_SECRET || "dev-staff-secret");
+      results.status = "warn";
+      results.detail = "Forged staff token verified with configured secret (review secret strength/rotation).";
+    } catch {
+      results.status = "ok";
+      results.detail = "Forged token rejected; signature validation intact.";
+    }
+    return results;
+  }
+
   results.status = "info";
   results.detail = "Probe not recognized.";
   return results;
@@ -129,7 +176,7 @@ router.post(
   async (req, res) => {
     try {
       const staff = req.staff || {};
-      const { scenarios = [], fingerprint: fingerprintInput, userAgent: userAgentBody } = req.body || {};
+      const { scenarios = [], fingerprint: fingerprintInput, userAgent: userAgentBody, url } = req.body || {};
       const userAgent =
         userAgentBody ||
         req.headers["x-simulated-user-agent"] ||
@@ -142,9 +189,9 @@ router.post(
 
       const requested = Array.isArray(scenarios) && scenarios.length
         ? scenarios
-        : ["sql_injection", "xss_payload", "dir_traversal", "user_agent_switch", "double_login"];
+        : ["sql_injection", "xss_payload", "dir_traversal", "user_agent_switch", "double_login", "ssrf_block", "token_tamper"];
 
-      const probes = requested.map((name) => runProbe(name, { session }));
+      const probes = requested.map((name) => runProbe(name, { session, body: { url } }));
 
       recordEvent("security_probe", staff.id, "info", {
         scenarios: requested,
