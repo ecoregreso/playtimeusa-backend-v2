@@ -1,8 +1,9 @@
 // src/routes/adminStaff.js
 const express = require("express");
 const bcrypt = require("bcryptjs");
+const { Op } = require("sequelize");
 
-const { StaffUser } = require("../models");
+const { StaffUser, Session } = require("../models");
 const {
   staffAuth,
   requirePermission,
@@ -10,6 +11,7 @@ const {
 const { PERMISSIONS } = require("../constants/permissions");
 
 const router = express.Router();
+const LIVE_WINDOW_MINUTES = 15;
 
 const ALLOWED_ROLES = ["cashier", "agent", "operator", "distributor", "owner"];
 
@@ -22,19 +24,51 @@ router.get("/", requirePermission(PERMISSIONS.STAFF_MANAGE), async (req, res) =>
       order: [["createdAt", "DESC"]],
     });
 
+    const staffIds = staff.map((s) => String(s.id));
+    const sessions = staffIds.length
+      ? await Session.findAll({
+          where: {
+            actorType: "staff",
+            userId: staffIds,
+            revokedAt: { [Op.is]: null },
+          },
+          order: [["lastSeenAt", "DESC"]],
+        })
+      : [];
+
+    const sessionMap = new Map();
+    for (const s of sessions) {
+      const key = String(s.userId);
+      if (!sessionMap.has(key)) sessionMap.set(key, s);
+    }
+
+    const now = Date.now();
+
     res.json({
       ok: true,
-      staff: staff.map((s) => ({
-        id: s.id,
-        username: s.username,
-        email: s.email,
-        role: s.role,
-        agentCode: s.agentCode,
-        parentId: s.parentId,
-        isActive: s.isActive,
-        permissions: s.permissions,
-        createdAt: s.createdAt,
-      })),
+      staff: staff.map((s) => {
+        const session = sessionMap.get(String(s.id)) || null;
+        const live =
+          session &&
+          !session.revokedAt &&
+          new Date(session.lastSeenAt || session.updatedAt || session.createdAt).getTime() >=
+            now - LIVE_WINDOW_MINUTES * 60 * 1000;
+        const liveStatus = live ? "live" : s.isActive ? "active" : "deprecated";
+        return {
+          id: s.id,
+          username: s.username,
+          email: s.email,
+          role: s.role,
+          agentCode: s.agentCode,
+          parentId: s.parentId,
+          isActive: s.isActive,
+          permissions: s.permissions,
+          createdAt: s.createdAt,
+          liveStatus,
+          isLive: live,
+          lastSeenAt: session?.lastSeenAt || session?.updatedAt || session?.createdAt || null,
+        };
+      }),
     });
   } catch (err) {
     console.error("[ADMIN_STAFF] list error:", err);

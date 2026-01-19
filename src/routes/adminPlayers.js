@@ -10,6 +10,7 @@ const {
 const { PERMISSIONS } = require("../constants/permissions");
 
 const router = express.Router();
+const LIVE_WINDOW_MINUTES = 15;
 
 async function getOrCreateWallet(userId, tenantId) {
   let wallet = await Wallet.findOne({ where: { userId, tenantId } });
@@ -19,13 +20,34 @@ async function getOrCreateWallet(userId, tenantId) {
   return wallet;
 }
 
-function toPlayerDto(user, wallet) {
+function computeLiveStatus({ user, wallet, session }) {
+  const balance = Number(wallet?.balance || 0);
+  const now = Date.now();
+  const live =
+    session &&
+    !session.revokedAt &&
+    new Date(session.lastSeenAt || session.updatedAt || session.createdAt).getTime() >=
+      now - LIVE_WINDOW_MINUTES * 60 * 1000;
+
+  if (live) return { liveStatus: "live", isLive: true, isDeprecated: false };
+  if (balance > 0 && user.isActive) return { liveStatus: "active", isLive: false, isDeprecated: false };
+  return { liveStatus: "deprecated", isLive: false, isDeprecated: true };
+}
+
+function toPlayerDto(user, wallet, session) {
+  const { liveStatus, isLive, isDeprecated } = computeLiveStatus({ user, wallet, session });
+  const balance = wallet ? Number(wallet.balance || 0) : 0;
   return {
     id: user.id,
     userCode: user.username,
     email: user.email,
     status: user.isActive ? "active" : "closed",
-    balance: wallet ? Number(wallet.balance || 0) : 0,
+    balance,
+    liveStatus,
+    isLive,
+    isDeprecated,
+    lastSeenAt: session?.lastSeenAt || session?.updatedAt || session?.createdAt || null,
+    canDelete: balance <= 0,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -58,14 +80,44 @@ router.get(
         where,
         order: [["createdAt", "DESC"]],
         limit,
-        include: [{ model: Wallet, as: "wallet" }],
+      });
+      const ids = players.map((p) => p.id);
+
+      const [wallets, sessions] = await Promise.all([
+        ids.length
+          ? Wallet.findAll({ where: { userId: ids } })
+          : [],
+        ids.length
+          ? Session.findAll({
+              where: {
+                actorType: "user",
+                userId: ids,
+                revokedAt: { [Op.is]: null },
+              },
+              order: [["lastSeenAt", "DESC"]],
+            })
+          : [],
+      ]);
+
+      const walletMap = new Map(wallets.map((w) => [String(w.userId), w]));
+      const sessionMap = new Map();
+      for (const s of sessions) {
+        const key = String(s.userId);
+        if (!sessionMap.has(key)) sessionMap.set(key, s);
+      }
+
+      const mapped = players.map((p) => {
+        const wallet = walletMap.get(String(p.id)) || null;
+        const session = sessionMap.get(String(p.id)) || null;
+        return toPlayerDto(p, wallet, session);
       });
 
-      const mapped = players.map((p) =>
-        toPlayerDto(p, p.wallet || p.Wallet || null)
-      );
+      const filtered =
+        status === "live" || status === "active" || status === "deprecated"
+          ? mapped.filter((p) => p.liveStatus === status)
+          : mapped;
 
-      res.json({ ok: true, players: mapped });
+      res.json({ ok: true, players: filtered });
     } catch (err) {
       console.error("[ADMIN_PLAYERS] list error:", err);
       res.status(500).json({ ok: false, error: "Internal error" });
@@ -82,16 +134,21 @@ router.get(
     try {
       const player = await User.findOne({
         where: { id: req.params.id, role: "player" },
-        include: [{ model: Wallet, as: "wallet" }],
       });
 
       if (!player) {
         return res.status(404).json({ ok: false, error: "Player not found" });
       }
 
+      const wallet = await Wallet.findOne({ where: { userId: player.id } });
+      const session = await Session.findOne({
+        where: { actorType: "user", userId: player.id, revokedAt: { [Op.is]: null } },
+        order: [["lastSeenAt", "DESC"]],
+      });
+
       res.json({
         ok: true,
-        player: toPlayerDto(player, player.wallet || player.Wallet || null),
+        player: toPlayerDto(player, wallet, session),
       });
     } catch (err) {
       console.error("[ADMIN_PLAYERS] detail error:", err);
@@ -236,6 +293,40 @@ router.get(
     } catch (err) {
       console.error("[ADMIN_PLAYERS] sessions error:", err);
       res.status(500).json({ ok: false, error: "Internal error" });
+    }
+  }
+);
+
+// DELETE /api/v1/admin/players/:id
+router.delete(
+  "/:id",
+  staffAuth,
+  requirePermission(PERMISSIONS.PLAYER_WRITE),
+  async (req, res) => {
+    try {
+      const player = await User.findOne({
+        where: { id: req.params.id, role: "player" },
+      });
+      if (!player) {
+        return res.status(404).json({ ok: false, error: "Player not found" });
+      }
+
+      const wallet = await Wallet.findOne({ where: { userId: player.id } });
+      const balance = wallet ? Number(wallet.balance || 0) : 0;
+      if (balance > 0) {
+        return res
+          .status(400)
+          .json({ ok: false, error: "Cannot delete player with positive balance" });
+      }
+
+      await Session.destroy({ where: { actorType: "user", userId: player.id } });
+      await Wallet.destroy({ where: { userId: player.id } });
+      await User.destroy({ where: { id: player.id } });
+
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[ADMIN_PLAYERS] delete error:", err);
+      res.status(500).json({ ok: false, error: "Failed to delete player" });
     }
   }
 );
