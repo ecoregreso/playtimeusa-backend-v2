@@ -30,6 +30,7 @@ const ownerTenantsRoutes = require("./routes/ownerTenants");
 const tenantConfigRoutes = require("./routes/tenantConfig");
 const publicBrandRoutes = require("./routes/publicBrand");
 const adminJackpotsRoutes = require("./routes/adminJackpots");
+const adminSecurityTestsRoutes = require("./routes/adminSecurityTests");
 const { buildNotImplementedRouter } = require("./routes/notImplemented");
 const ownerSecurityRoutes = require("./routes/ownerSecurity");
 const { requestIdMiddleware } = require("./lib/security/requestId");
@@ -322,6 +323,7 @@ app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
 app.use("/api/v1/owner", ownerTenantsRoutes);
 app.use("/api/v1/owner/security", ownerSecurityRoutes);
 app.use("/api/v1/admin/jackpots", adminJackpotsRoutes);
+app.use("/api/v1/admin/security", adminSecurityTestsRoutes);
 app.use("/api/v1/config", tenantConfigRoutes);
 app.use("/api/v1", buildNotImplementedRouter());
 
