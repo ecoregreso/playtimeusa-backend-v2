@@ -549,8 +549,24 @@ async function triggerJackpotHit({ jackpotId, tenantScope, payoutCents, playerId
   const t = await sequelize.transaction();
   try {
     const jackpot = await loadScopedJackpot(jackpotId, tenantScope, t);
+    // Resolve tenant for wallet credit: prefer jackpot tenant, then tenant scope, then player's tenant
+    let playerTenantId = null;
+    if (playerId) {
+      // Lazy-load User via models registry
+      const UserModel = Wallet.sequelize.models.User;
+      if (UserModel) {
+        const playerUser = await UserModel.findByPk(playerId, { transaction: t });
+        playerTenantId = playerUser?.tenantId || null;
+      }
+    }
+    const targetTenantId = jackpot.tenantId || tenantScope || playerTenantId || null;
+    if (!targetTenantId) {
+      const err = new Error("Unable to resolve tenant for jackpot credit");
+      err.status = 400;
+      throw err;
+    }
+
     // Align RLS context so wallet updates honor tenant scope
-    const targetTenantId = jackpot.tenantId || tenantScope || null;
     await sequelize.query("SET LOCAL app.role = 'owner'", { transaction: t });
     await sequelize.query("SET LOCAL app.tenant_id = :tenantId", {
       transaction: t,
