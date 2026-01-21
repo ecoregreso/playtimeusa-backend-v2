@@ -339,17 +339,7 @@ async function processJackpotPayout({ jackpot, tenantId, playerId, gameId, trans
     return;
   }
 
-  let winnerId = playerId || null;
-  if (jackpot.type === "weekly") {
-    const candidate = await pickWeeklyWinner();
-    if (candidate) {
-      winnerId = candidate;
-      const user = await User.findByPk(candidate);
-      if (user && user.tenantId) {
-        tenantId = user.tenantId;
-      }
-    }
-  }
+  const winnerId = playerId || null;
 
   const potAfter = potBefore - trigger;
   jackpot.currentPotCents = potAfter;
