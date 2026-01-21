@@ -549,6 +549,18 @@ async function triggerJackpotHit({ jackpotId, tenantScope, payoutCents, playerId
   const t = await sequelize.transaction();
   try {
     const jackpot = await loadScopedJackpot(jackpotId, tenantScope, t);
+    // Align RLS context so wallet updates honor tenant scope
+    const targetTenantId = jackpot.tenantId || tenantScope || null;
+    await sequelize.query("SET LOCAL app.role = 'owner'", { transaction: t });
+    await sequelize.query("SET LOCAL app.tenant_id = :tenantId", {
+      transaction: t,
+      replacements: { tenantId: targetTenantId || "" },
+    });
+    await sequelize.query("SET LOCAL app.user_id = :userId", {
+      transaction: t,
+      replacements: { userId: playerId || triggeredBy || "admin_manual" },
+    });
+
     const potBefore = toNumber(jackpot.currentPotCents || 0);
     const trigger = toNumber(jackpot.triggerCents || 0);
     const desired = payoutCents !== undefined && payoutCents !== null ? toNumber(payoutCents) : trigger || potBefore;
