@@ -215,8 +215,17 @@ router.post(
         gameId,
       });
 
+      // If a jackpot was hit, refresh wallet so the returned balance includes the payout
+      let walletWithJackpots = wallet;
+      if (Array.isArray(jackpotWins) && jackpotWins.length) {
+        const refreshed = await Wallet.findByPk(wallet.id);
+        if (refreshed) {
+          walletWithJackpots = refreshed;
+        }
+      }
+
       return res.status(201).json({
-        wallet,
+        wallet: walletWithJackpots,
         transaction: betTx,
         round,
         bonus: buildBonusState(wallet),
