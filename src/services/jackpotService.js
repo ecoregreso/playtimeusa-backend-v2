@@ -299,12 +299,12 @@ async function creditJackpot({ jackpot, tenantId, playerId, amountCents, gameId,
     {
       tenantId: tenantId || null,
       walletId: wallet.id,
-      type: "jackpot_win",
+      type: "credit", // avoid enum mismatch; mark jackpot via reference/metadata
       amount: amountMajor,
       balanceBefore,
       balanceAfter: wallet.balance,
       reference: `jackpot:${jackpot.type}`,
-      metadata: { jackpotId: jackpot.id, gameId: gameId || null },
+      metadata: { jackpotId: jackpot.id, gameId: gameId || null, category: "jackpot_win" },
       createdByUserId: playerId || null,
     },
     { transaction }
