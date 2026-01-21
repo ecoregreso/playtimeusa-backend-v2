@@ -2,7 +2,7 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 
 const { Op } = require("sequelize");
-const { sequelize, User, Wallet, Voucher, Transaction, Session } = require("../models");
+const { sequelize, User, Wallet, Voucher, Transaction, Session, JackpotEvent } = require("../models");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { signAccessToken, signRefreshToken } = require("../utils/jwt");
@@ -38,6 +38,34 @@ router.get("/ping", (req, res) => {
     scope: "player",
     time: new Date().toISOString(),
   });
+});
+
+// Latest jackpot win for the current player (to surface manual triggers)
+router.get("/jackpots/latest", requireAuth, requireRole("player"), async (req, res) => {
+  try {
+    const tenantId = req.auth?.tenantId || null;
+    const event = await JackpotEvent.findOne({
+      where: {
+        playerId: req.user.id,
+        ...(tenantId ? { tenantId: { [Op.or]: [tenantId, null] } } : {}),
+      },
+      order: [["created_at", "DESC"]],
+    });
+    if (!event) return res.json({ ok: true, event: null });
+
+    const payload = {
+      id: event.id,
+      jackpotId: event.jackpotId,
+      jackpotType: event.metadata?.type || null,
+      amountCents: Number(event.amountCents || event.amount_cents || 0),
+      createdAt: event.created_at || event.createdAt || null,
+      metadata: event.metadata || null,
+    };
+    res.json({ ok: true, event: payload });
+  } catch (err) {
+    console.error("[PLAYER] jackpots/latest error:", err);
+    res.status(500).json({ ok: false, error: "Failed to load jackpot" });
+  }
 });
 
 async function getOrCreateWallet(userId, tenantId, t) {
