@@ -366,6 +366,9 @@ router.post(
             wallet.balanceCents = walletBalance - shortfall;
             pool.poolBalanceCents = poolBalance + shortfall;
             await wallet.save({ transaction: t });
+          } else if (req.staff?.role === "owner") {
+            // Owner override: mint shortfall directly into the pool for emergency issuance.
+            pool.poolBalanceCents = poolBalance + shortfall;
           }
         }
 
