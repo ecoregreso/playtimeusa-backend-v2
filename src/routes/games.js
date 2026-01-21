@@ -208,7 +208,7 @@ router.post(
       });
 
       // Jackpot contributions & triggers
-      await jackpotService.processBet({
+      const jackpotWins = await jackpotService.processBet({
         tenantId: req.auth?.tenantId || null,
         playerId: req.user.id,
         betAmount: amount,
@@ -220,6 +220,7 @@ router.post(
         transaction: betTx,
         round,
         bonus: buildBonusState(wallet),
+        jackpotWins,
       });
     } catch (err) {
       console.error('[GAMES] POST /games/:gameId/bet error:', err);

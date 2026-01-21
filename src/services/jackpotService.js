@@ -327,7 +327,7 @@ async function creditJackpot({ jackpot, tenantId, playerId, amountCents, gameId,
 async function processJackpotPayout({ jackpot, tenantId, playerId, gameId, transaction }) {
   const potBefore = Number(jackpot.currentPotCents || 0);
   const trigger = Number(jackpot.triggerCents || 0);
-  if (!trigger || potBefore < trigger) return;
+  if (!trigger || potBefore < trigger) return null;
 
   // weekly: enforce 7d cooldown
   const now = new Date();
@@ -336,7 +336,7 @@ async function processJackpotPayout({ jackpot, tenantId, playerId, gameId, trans
     jackpot.lastHitAt &&
     new Date(jackpot.lastHitAt).getTime() + 7 * 24 * 60 * 60 * 1000 > now.getTime()
   ) {
-    return;
+    return null;
   }
 
   const winnerId = playerId || null;
@@ -367,14 +367,29 @@ async function processJackpotPayout({ jackpot, tenantId, playerId, gameId, trans
   if (winnerId) {
     await creditJackpot({ jackpot, tenantId, playerId: winnerId, amountCents: trigger, gameId, transaction });
   }
+
+  return {
+    jackpotId: jackpot.id,
+    jackpotType: jackpot.type,
+    amountCents: trigger,
+    amount: Number(trigger) / 100,
+    winnerId,
+    potBeforeCents: potBefore,
+    potAfterCents: potAfter,
+    nextTriggerCents: Number(jackpot.triggerCents || 0),
+    gameId: gameId || null,
+    tenantId: tenantId || null,
+    hitAt: now,
+  };
 }
 
 async function processBet({ tenantId, playerId, betAmount, gameId }) {
   const betCents = toCents(betAmount);
-  if (!betCents || betCents <= 0) return;
+  if (!betCents || betCents <= 0) return [];
 
   const jackpots = await ensureJackpotsForTenant(tenantId);
   const now = new Date();
+  const jackpotHits = [];
 
   const targets = [
     jackpots.hourly,
@@ -398,7 +413,7 @@ async function processBet({ tenantId, playerId, betAmount, gameId }) {
       await fresh.save({ transaction: t });
 
       await upsertContribution(fresh.id, contrib, t);
-      await processJackpotPayout({
+      const hit = await processJackpotPayout({
         jackpot: fresh,
         tenantId: fresh.tenantId || tenantId || null,
         playerId,
@@ -406,12 +421,18 @@ async function processBet({ tenantId, playerId, betAmount, gameId }) {
         transaction: t,
       });
 
+      if (hit) {
+        jackpotHits.push(hit);
+      }
+
       await t.commit();
     } catch (err) {
       await t.rollback();
       console.error("[JACKPOT] process bet failed:", err);
     }
   }
+
+  return jackpotHits;
 }
 
 async function getJackpotSummary({ tenantId, includeGlobal = true }) {
