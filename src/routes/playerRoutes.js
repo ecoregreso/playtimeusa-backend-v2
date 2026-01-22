@@ -9,6 +9,7 @@ const { signAccessToken, signRefreshToken } = require("../utils/jwt");
 const { requireAuth } = require("../middleware/auth");
 const { initTenantContext } = require("../middleware/tenantContext");
 const { emitSecurityEvent, maskCode } = require("../lib/security/events");
+const jackpotService = require("../services/jackpotService");
 
 const router = express.Router();
 
@@ -65,6 +66,30 @@ router.get("/jackpots/latest", requireAuth, requireRole("player"), async (req, r
   } catch (err) {
     console.error("[PLAYER] jackpots/latest error:", err);
     res.status(500).json({ ok: false, error: "Failed to load jackpot" });
+  }
+});
+
+// Current jackpot amounts for player-facing display
+router.get("/jackpots/summary", requireAuth, requireRole("player"), async (req, res) => {
+  try {
+    const tenantId = req.auth?.tenantId || null;
+    const jackpots = await jackpotService.ensureJackpotsForTenant(tenantId);
+    const payload = {};
+    ["hourly", "daily", "weekly"].forEach((type) => {
+      const jp = jackpots[type];
+      if (!jp) return;
+      payload[type] = {
+        id: jp.id,
+        currentPotCents: Number(jp.currentPotCents || 0),
+        triggerCents: Number(jp.triggerCents || 0),
+        lastHitAt: jp.lastHitAt || null,
+        nextDrawAt: jp.nextDrawAt || null,
+      };
+    });
+    res.json({ ok: true, jackpots: payload });
+  } catch (err) {
+    console.error("[PLAYER] jackpots/summary error:", err);
+    res.status(500).json({ ok: false, error: "Failed to load jackpots" });
   }
 });
 
