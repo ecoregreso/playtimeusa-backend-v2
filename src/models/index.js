@@ -32,6 +32,7 @@ const CreditLedger = require("./CreditLedger");
 const Jackpot = require("./Jackpot");
 const JackpotEvent = require("./JackpotEvent");
 const JackpotContribution = require("./JackpotContribution");
+const ShiftClosure = require("./ShiftClosure");
 
 Tenant.hasMany(User, { foreignKey: "tenantId" });
 User.belongsTo(Tenant, { foreignKey: "tenantId" });
@@ -105,6 +106,11 @@ TenantVoucherPool.belongsTo(Tenant, { foreignKey: "tenantId" });
 Tenant.hasMany(CreditLedger, { foreignKey: "tenantId" });
 CreditLedger.belongsTo(Tenant, { foreignKey: "tenantId" });
 
+Tenant.hasMany(ShiftClosure, { foreignKey: "tenantId" });
+ShiftClosure.belongsTo(Tenant, { foreignKey: "tenantId" });
+StaffUser.hasMany(ShiftClosure, { foreignKey: "staffId" });
+ShiftClosure.belongsTo(StaffUser, { foreignKey: "staffId" });
+
 Distributor.hasMany(Tenant, { foreignKey: "distributorId" });
 Tenant.belongsTo(Distributor, { foreignKey: "distributorId" });
 
@@ -150,4 +156,5 @@ module.exports = {
   Jackpot,
   JackpotEvent,
   JackpotContribution,
+  ShiftClosure,
 };

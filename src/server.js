@@ -323,6 +323,7 @@ app.use("/api/v1/purchase-orders", purchaseOrdersRoutes);
 app.use("/api/v1/owner", ownerTenantsRoutes);
 app.use("/api/v1/owner/security", ownerSecurityRoutes);
 app.use("/api/v1/admin/jackpots", adminJackpotsRoutes);
+app.use("/api/v1/admin/shifts", adminShiftsRoutes);
 app.use("/api/v1/admin/security", adminSecurityTestsRoutes);
 app.use("/api/v1/config", tenantConfigRoutes);
 app.use("/api/v1", buildNotImplementedRouter());
