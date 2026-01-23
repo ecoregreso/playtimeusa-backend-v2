@@ -31,6 +31,7 @@ const tenantConfigRoutes = require("./routes/tenantConfig");
 const publicBrandRoutes = require("./routes/publicBrand");
 const adminJackpotsRoutes = require("./routes/adminJackpots");
 const adminSecurityTestsRoutes = require("./routes/adminSecurityTests");
+const adminShiftsRoutes = require("./routes/adminShifts");
 const { buildNotImplementedRouter } = require("./routes/notImplemented");
 const ownerSecurityRoutes = require("./routes/ownerSecurity");
 const { requestIdMiddleware } = require("./lib/security/requestId");
