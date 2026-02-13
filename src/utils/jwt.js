@@ -4,11 +4,29 @@ const { hashToken } = require("./token");
 
 const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
 const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+const GLOBAL_ACCESS_EXPIRES_IN = process.env.JWT_ACCESS_EXPIRES_IN || "";
+const DEFAULT_PLAYER_ACCESS_EXPIRES_IN = "8h";
+const DEFAULT_STAFF_ACCESS_EXPIRES_IN = "15m";
+const PLAYER_ACCESS_EXPIRES_IN =
+  process.env.JWT_PLAYER_ACCESS_EXPIRES_IN ||
+  GLOBAL_ACCESS_EXPIRES_IN ||
+  DEFAULT_PLAYER_ACCESS_EXPIRES_IN;
+const STAFF_ACCESS_EXPIRES_IN =
+  process.env.JWT_STAFF_ACCESS_EXPIRES_IN ||
+  GLOBAL_ACCESS_EXPIRES_IN ||
+  DEFAULT_STAFF_ACCESS_EXPIRES_IN;
 
 function ensureSecrets() {
   if (!ACCESS_SECRET || !REFRESH_SECRET) {
     console.warn("[JWT] Missing access/refresh secrets");
   }
+}
+
+function resolveAccessExpiresIn(user, opts = {}) {
+  if (opts.expiresIn) return opts.expiresIn;
+  const role = String(user?.role || "").toLowerCase();
+  if (role === "player") return PLAYER_ACCESS_EXPIRES_IN;
+  return STAFF_ACCESS_EXPIRES_IN;
 }
 
 function signAccessToken(user, opts = {}) {
@@ -25,7 +43,8 @@ function signAccessToken(user, opts = {}) {
   if (opts.extra && typeof opts.extra === "object") {
     Object.assign(payload, opts.extra);
   }
-  return jwt.sign(payload, ACCESS_SECRET, { expiresIn: "15m" });
+  const expiresIn = resolveAccessExpiresIn(user, opts);
+  return jwt.sign(payload, ACCESS_SECRET, { expiresIn });
 }
 
 function signRefreshToken(user, opts = {}) {
