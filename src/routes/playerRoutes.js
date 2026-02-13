@@ -9,6 +9,7 @@ const { getLock, recordFailure, recordSuccess } = require("../utils/lockout");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { resolveVoucherMaxCashout } = require("../services/voucherOutcomeService");
+const { resolveWalletVoucherPolicyState } = require("../services/voucherWalletStateService");
 const { signAccessToken, signRefreshToken } = require("../utils/jwt");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { initTenantContext } = require("../middleware/tenantContext");
@@ -626,8 +627,15 @@ router.get("/me", requireAuth, async (req, res) => {
             currency: user.wallet.currency,
             bonusPending: Number(user.wallet.bonusPending || 0),
             bonusUnacked: Number(user.wallet.bonusUnacked || 0),
+            activeVoucherId: user.wallet.activeVoucherId || null,
           }
         : null,
+      voucherPolicy: await resolveWalletVoucherPolicyState({
+        wallet: user.wallet,
+        userId: user.id,
+        tenantId: req.auth?.tenantId || user.tenantId || null,
+        persistWalletLink: true,
+      }),
       bonus: bonusState,
     });
   } catch (err) {

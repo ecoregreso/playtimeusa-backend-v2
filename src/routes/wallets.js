@@ -3,6 +3,7 @@ const { sequelize } = require('../db');
 const { User, Wallet, Transaction } = require('../models');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { logEvent } = require("../services/auditService");
+const { resolveWalletVoucherPolicyState } = require("../services/voucherWalletStateService");
 
 const router = express.Router();
 
@@ -40,9 +41,16 @@ router.get('/:userId',
         order: [['createdAt', 'DESC']],
         limit: 50,
       });
+      const voucherPolicy = await resolveWalletVoucherPolicyState({
+        wallet,
+        userId,
+        tenantId: req.auth?.tenantId || wallet.tenantId || null,
+        persistWalletLink: true,
+      });
 
       return res.json({
         wallet,
+        voucherPolicy,
         transactions,
       });
     } catch (err) {
@@ -150,9 +158,15 @@ router.post('/:userId/credit',
           transactionId: tx?.id || null,
         },
       });
+      const voucherPolicy = await resolveWalletVoucherPolicyState({
+        wallet,
+        userId,
+        tenantId: req.auth?.tenantId || wallet.tenantId || null,
+      });
 
       return res.status(201).json({
         wallet,
+        voucherPolicy,
         transaction: tx,
       });
     } catch (err) {
@@ -298,9 +312,15 @@ router.post('/:userId/debit',
           transactionId: tx?.id || null,
         },
       });
+      const voucherPolicy = await resolveWalletVoucherPolicyState({
+        wallet,
+        userId,
+        tenantId: req.auth?.tenantId || wallet.tenantId || null,
+      });
 
       return res.status(201).json({
         wallet,
+        voucherPolicy,
         transaction: tx,
       });
     } catch (err) {
