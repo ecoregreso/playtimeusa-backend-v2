@@ -12,6 +12,8 @@ const {
   Wallet,
   Transaction,
   User,
+  Session,
+  RefreshToken,
   TenantVoucherPool,
   TenantWallet,
   StaffUser,
@@ -370,6 +372,33 @@ router.get(
         limit,
       });
 
+      const redeemedUserIds = Array.from(
+        new Set(
+          vouchers
+            .map((voucher) =>
+              voucher?.redeemedByUserId ? String(voucher.redeemedByUserId) : ""
+            )
+            .filter(Boolean)
+        )
+      );
+      const walletRows = redeemedUserIds.length
+        ? await Wallet.findAll({
+            where: {
+              userId: { [Op.in]: redeemedUserIds },
+              ...(tenantId ? { tenantId } : {}),
+            },
+            attributes: ["id", "userId", "tenantId", "currency", "balance", "activeVoucherId"],
+          })
+        : [];
+      const walletsByUserId = new Map();
+      walletRows.forEach((wallet) => {
+        const row = wallet.toJSON ? wallet.toJSON() : { ...wallet };
+        const userId = row?.userId ? String(row.userId) : "";
+        if (!userId) return;
+        if (!walletsByUserId.has(userId)) walletsByUserId.set(userId, []);
+        walletsByUserId.get(userId).push(row);
+      });
+
       const staffIds = new Set();
       vouchers.forEach((voucher) => {
         const metadata = voucher.metadata && typeof voucher.metadata === "object"
@@ -405,18 +434,70 @@ router.get(
       const normalized = vouchers.map((voucher) => {
         const data = voucher.toJSON ? voucher.toJSON() : { ...voucher };
         const metadata = data.metadata && typeof data.metadata === "object" ? data.metadata : {};
+        const status = String(data.status || "").toLowerCase();
+        const voucherId = data.id ? String(data.id) : "";
+        const redeemedUserId = data.redeemedByUserId ? String(data.redeemedByUserId) : "";
+        const walletCandidates = redeemedUserId ? walletsByUserId.get(redeemedUserId) || [] : [];
+        const matchedWallet =
+          walletCandidates.find((w) => String(w.activeVoucherId || "") === voucherId) ||
+          walletCandidates.find(
+            (w) =>
+              String(w.currency || "").toUpperCase() === String(data.currency || "").toUpperCase()
+          ) ||
+          walletCandidates[0] ||
+          null;
+        const isWalletLinkedToVoucher =
+          matchedWallet && String(matchedWallet.activeVoucherId || "") === voucherId;
+        const finalAmountSettled = toMoney(
+          metadata.finalAmountSettled ?? metadata.cashoutAmount ?? 0
+        );
+        const currentVoucherValue = toMoney(
+          status === "terminated"
+            ? finalAmountSettled
+            : isWalletLinkedToVoucher || status === "redeemed"
+            ? Math.max(0, toMoney(matchedWallet?.balance || 0))
+            : 0
+        );
         const createdByStaffId = normalizeStaffId(
           data.createdByUserId || metadata.createdByStaffId || metadata.voucherCreatedByStaffId
         );
         const cashoutByStaffId = normalizeStaffId(
           metadata.cashoutByStaffId || metadata.terminatedByStaffId
         );
+        const deactivatedByStaffId = normalizeStaffId(
+          metadata.deactivatedByStaffId || metadata.terminatedByStaffId || metadata.cashoutByStaffId
+        );
 
         return {
           ...data,
-          status: String(data.status || "").toLowerCase(),
+          status,
           createdByStaffId,
           createdByStaff: createdByStaffId ? staffMap.get(createdByStaffId) || null : null,
+          currentVoucherValue,
+          finalAmountSettled: status === "terminated" ? finalAmountSettled : 0,
+          finalAmountSettledAt:
+            metadata.finalAmountSettledAt || metadata.cashoutAt || metadata.terminatedAt || null,
+          voucherLedgerRows: [
+            {
+              key: "current_voucher_value",
+              label: "Current Voucher Value",
+              amount: currentVoucherValue,
+            },
+            ...(status === "terminated"
+              ? [
+                  {
+                    key: "final_amount_settled",
+                    label: "Final Amount Settled",
+                    amount: finalAmountSettled,
+                    at:
+                      metadata.finalAmountSettledAt ||
+                      metadata.cashoutAt ||
+                      metadata.terminatedAt ||
+                      null,
+                  },
+                ]
+              : []),
+          ],
           cashoutAmount: toMoney(metadata.cashoutAmount || 0),
           cashoutAt: metadata.cashoutAt || metadata.terminatedAt || null,
           cashoutByStaffId,
@@ -424,6 +505,13 @@ router.get(
           cashoutTransactionId: metadata.cashoutTransactionId || null,
           cashoutBalanceBefore: toMoney(metadata.cashoutBalanceBefore || 0),
           cashoutBonusPendingVoided: toMoney(metadata.cashoutBonusPendingVoided || 0),
+          profileDeactivated: Boolean(metadata.profileDeactivated),
+          deactivatedAt: metadata.deactivatedAt || null,
+          deactivatedReason: metadata.deactivatedReason || metadata.terminatedReason || null,
+          deactivatedByStaffId,
+          deactivatedByStaff: deactivatedByStaffId ? staffMap.get(deactivatedByStaffId) || null : null,
+          revokedSessionCount: Number(metadata.revokedSessionCount || 0),
+          revokedRefreshTokenCount: Number(metadata.revokedRefreshTokenCount || 0),
         };
       });
 
@@ -944,10 +1032,24 @@ router.post(
         });
       }
 
+      let player = null;
+      if (voucher.redeemedByUserId) {
+        player = await User.findOne({
+          where: {
+            id: voucher.redeemedByUserId,
+            tenantId,
+            role: "player",
+          },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+      }
+
       const balanceBefore = toMoney(wallet ? wallet.balance : 0);
       const bonusPendingBefore = toMoney(wallet ? wallet.bonusPending : 0);
       const bonusUnackedBefore = toMoney(wallet ? wallet.bonusUnacked : 0);
       const cashoutAmount = Math.max(0, balanceBefore);
+      const finalAmountSettled = cashoutAmount;
 
       let cashoutTx = null;
       if (wallet) {
@@ -972,6 +1074,7 @@ router.post(
               code: voucher.code,
               reason: reason || "cashout",
               cashoutAmount,
+              finalAmountSettled,
               cashoutByStaffId: req.staff?.id || null,
               cashoutByRole: req.staff?.role || null,
               voucherCreatedByStaffId,
@@ -986,6 +1089,42 @@ router.post(
         );
       }
 
+      let profileDeactivated = false;
+      let revokedSessionCount = 0;
+      let revokedRefreshCount = 0;
+      if (player) {
+        if (player.isActive) {
+          player.isActive = false;
+          await player.save({ transaction: t });
+        }
+        profileDeactivated = true;
+        const [sessionCount] = await Session.update(
+          { revokedAt: now },
+          {
+            where: {
+              tenantId,
+              actorType: "user",
+              userId: String(player.id),
+              revokedAt: { [Op.is]: null },
+            },
+            transaction: t,
+          }
+        );
+        revokedSessionCount = Number(sessionCount || 0);
+        const [refreshCount] = await RefreshToken.update(
+          { revokedAt: now, revokedReason: "voucher_terminated" },
+          {
+            where: {
+              tenantId,
+              userId: player.id,
+              revokedAt: { [Op.is]: null },
+            },
+            transaction: t,
+          }
+        );
+        revokedRefreshCount = Number(refreshCount || 0);
+      }
+
       voucher.status = "terminated";
       voucher.metadata = {
         ...voucherMeta,
@@ -994,6 +1133,8 @@ router.post(
         terminatedReason: reason || null,
         cashoutAt: now.toISOString(),
         cashoutAmount,
+        finalAmountSettled,
+        finalAmountSettledAt: now.toISOString(),
         cashoutByStaffId: req.staff?.id || null,
         cashoutByRole: req.staff?.role || null,
         cashoutPlayerId: voucher.redeemedByUserId || wallet?.userId || null,
@@ -1006,6 +1147,13 @@ router.post(
         cashoutTransactionId: cashoutTx?.id || null,
         voucherCreatedByStaffId,
         voucherCreatedByStaffUsername,
+        profileDeactivated,
+        deactivatedPlayerId: player?.id || voucher.redeemedByUserId || null,
+        deactivatedAt: now.toISOString(),
+        deactivatedByStaffId: req.staff?.id || null,
+        deactivatedReason: reason || "voucher_terminated",
+        revokedSessionCount,
+        revokedRefreshTokenCount: revokedRefreshCount,
       };
       await voucher.save({ transaction: t });
 
@@ -1025,9 +1173,37 @@ router.post(
           reason: reason || "terminated",
           cashoutAmount,
           cashoutAmountCents: toCents(cashoutAmount),
+          finalAmountSettled,
+          finalAmountSettledCents: toCents(finalAmountSettled),
           cashoutTransactionId: cashoutTx?.id || null,
           bonusPendingVoided: bonusPendingBefore,
           bonusUnackedBefore,
+          voucherCreatedByStaffId,
+          voucherCreatedByStaffUsername,
+          profileDeactivated,
+          deactivatedPlayerId: player?.id || voucher.redeemedByUserId || null,
+          revokedSessionCount,
+          revokedRefreshTokenCount: revokedRefreshCount,
+        },
+      });
+
+      await recordLedgerEvent({
+        ts: now,
+        playerId: voucher.redeemedByUserId || wallet?.userId || null,
+        cashierId: req.staff?.role === "cashier" ? req.staff.id : null,
+        agentId: req.staff?.role === "cashier" ? null : req.staff?.id || null,
+        eventType: "VOUCHER_SETTLED",
+        actionId: voucher.id,
+        amountCents: toCents(finalAmountSettled),
+        source: "vouchers.terminate.final_settlement",
+        meta: {
+          ...(buildRequestMeta(req, { staffRole: req.staff?.role || null }) || {}),
+          voucherId: voucher.id,
+          code: voucher.code,
+          ledgerRowType: "final_amount_settled",
+          finalAmountSettled,
+          finalAmountSettledCents: toCents(finalAmountSettled),
+          cashoutTransactionId: cashoutTx?.id || null,
           voucherCreatedByStaffId,
           voucherCreatedByStaffUsername,
         },
@@ -1052,9 +1228,14 @@ router.post(
           code: voucher.code,
           reason,
           cashoutAmount,
+          finalAmountSettled,
           cashoutTransactionId: cashoutTx?.id || null,
           voucherCreatedByStaffId,
           voucherCreatedByStaffUsername,
+          profileDeactivated,
+          deactivatedPlayerId: player?.id || voucher.redeemedByUserId || null,
+          revokedSessionCount,
+          revokedRefreshTokenCount: revokedRefreshCount,
         },
       });
 
@@ -1064,10 +1245,18 @@ router.post(
         voucher: sanitizeVoucher(voucher),
         cashout: {
           amount: cashoutAmount,
+          finalAmountSettled,
           walletBalanceBefore: balanceBefore,
           walletBalanceAfter: toMoney(wallet ? wallet.balance : 0),
           bonusPendingVoided: bonusPendingBefore,
           transactionId: cashoutTx?.id || null,
+        },
+        profile: {
+          playerId: player?.id || voucher.redeemedByUserId || null,
+          deactivated: profileDeactivated,
+          deactivatedAt: profileDeactivated ? now.toISOString() : null,
+          revokedSessionCount,
+          revokedRefreshTokenCount: revokedRefreshCount,
         },
       });
     } catch (err) {
