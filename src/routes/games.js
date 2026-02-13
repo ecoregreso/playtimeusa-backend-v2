@@ -2,14 +2,24 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const { sequelize } = require('../db');
-const { Wallet, Transaction, GameRound, Session, PlayerSafetyAction } = require('../models');
+const { Wallet, Transaction, GameRound, Session, PlayerSafetyAction, Voucher } = require('../models');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
+const {
+  resolveVoucherMaxCashout,
+  readVoucherPolicy,
+  computeVoucherDrivenPayout,
+  buildVoucherPolicyMetadata,
+} = require("../services/voucherOutcomeService");
 const safetyEngine = require("../services/playerSafetyEngine");
 const jackpotService = require("../services/jackpotService");
 
 const router = express.Router();
+
+function toMoney(value) {
+  return Math.round(Number(value || 0) * 10000) / 10000;
+}
 
 async function getOrCreateWallet(userId, tenantId, t) {
   let wallet = await Wallet.findOne({
@@ -48,6 +58,38 @@ async function resolveSessionId(req, userId, t) {
   session.lastSeenAt = new Date();
   await session.save({ transaction: t });
   return session.id;
+}
+
+async function resolveActiveVoucher({ wallet, userId, tenantId, transaction }) {
+  if (wallet?.activeVoucherId) {
+    const active = await Voucher.findOne({
+      where: { id: wallet.activeVoucherId, tenantId: tenantId || null },
+      transaction,
+      lock: transaction?.LOCK?.UPDATE,
+    });
+    if (active) return active;
+  }
+
+  const fallback = await Voucher.findOne({
+    where: {
+      tenantId: tenantId || null,
+      redeemedByUserId: userId,
+      status: { [Op.in]: ["redeemed", "REDEEMED"] },
+    },
+    order: [
+      ["redeemedAt", "DESC"],
+      ["createdAt", "DESC"],
+    ],
+    transaction,
+    lock: transaction?.LOCK?.UPDATE,
+  });
+
+  if (fallback && wallet && wallet.activeVoucherId !== fallback.id) {
+    wallet.activeVoucherId = fallback.id;
+    await wallet.save({ transaction });
+  }
+
+  return fallback;
 }
 
 /**
@@ -117,6 +159,32 @@ router.post(
       }
 
       const wallet = await getOrCreateWallet(req.user.id, req.auth?.tenantId || null, t);
+      const activeVoucher = await resolveActiveVoucher({
+        wallet,
+        userId: req.user.id,
+        tenantId: req.auth?.tenantId || null,
+        transaction: t,
+      });
+
+      if (!activeVoucher) {
+        await t.rollback();
+        return res.status(403).json({
+          ok: false,
+          code: "NO_ACTIVE_VOUCHER",
+          message: "No active redeemed voucher is linked to this wallet.",
+        });
+      }
+
+      const maxCashout = resolveVoucherMaxCashout(activeVoucher);
+      if (!(maxCashout > 0)) {
+        await t.rollback();
+        return res.status(400).json({
+          ok: false,
+          code: "INVALID_VOUCHER_CAP",
+          message: "Voucher max cashout is not configured.",
+        });
+      }
+      const policySnapshot = readVoucherPolicy(activeVoucher);
 
       const balanceBefore = parseFloat(wallet.balance || 0);
       if (balanceBefore < amount) {
@@ -125,12 +193,53 @@ router.post(
       }
 
       const balanceAfter = balanceBefore - amount;
+      const trackedBeforeBet = toMoney(
+        Math.max(
+          0,
+          Number(
+            policySnapshot.hasTrackedBalance
+              ? policySnapshot.trackedBalance
+              : Math.min(maxCashout, balanceBefore)
+          )
+        )
+      );
+      const trackedAfterBet = toMoney(Math.max(0, trackedBeforeBet - amount));
       wallet.balance = balanceAfter;
       await wallet.save({ transaction: t });
+
+      const priorVoucherPolicy =
+        activeVoucher.metadata &&
+        activeVoucher.metadata.voucherPolicy &&
+        typeof activeVoucher.metadata.voucherPolicy === "object"
+          ? activeVoucher.metadata.voucherPolicy
+          : {};
+      activeVoucher.maxCashout = maxCashout;
+      activeVoucher.metadata = {
+        ...(activeVoucher.metadata || {}),
+        maxCashout,
+        voucherPolicy: {
+          ...priorVoucherPolicy,
+          maxCashout,
+          trackedBalance: trackedAfterBet,
+          lastBalance: trackedAfterBet,
+          decayRate: Number(priorVoucherPolicy.decayRate || policySnapshot.decayRate),
+          minDecayAmount: Number(
+            priorVoucherPolicy.minDecayAmount || policySnapshot.minDecayAmount
+          ),
+          stakeDecayMultiplier: Number(
+            priorVoucherPolicy.stakeDecayMultiplier || policySnapshot.stakeDecayMultiplier
+          ),
+        },
+      };
+      await activeVoucher.save({ transaction: t });
 
       const txMetadata = {
         gameId,
         roundIndex: roundIndex ?? null,
+        voucherId: activeVoucher.id,
+        maxCashout,
+        voucherTrackedBeforeBet: trackedBeforeBet,
+        voucherTrackedAfterBet: trackedAfterBet,
         ...(metadata || {}),
       };
       if (sessionId) txMetadata.sessionId = sessionId;
@@ -151,6 +260,13 @@ router.post(
       );
 
       const roundMetadata = {
+        voucherId: activeVoucher.id,
+        maxCashout,
+        balanceBeforeBet: balanceBefore,
+        balanceAfterBet: balanceAfter,
+        voucherTrackedBeforeBet: trackedBeforeBet,
+        voucherTrackedAfterBet: trackedAfterBet,
+        voucherPolicy: readVoucherPolicy(activeVoucher),
         ...(metadata || {}),
       };
       if (sessionId) roundMetadata.sessionId = sessionId;
@@ -228,12 +344,21 @@ router.post(
         wallet: walletWithJackpots,
         transaction: betTx,
         round,
-        bonus: buildBonusState(wallet),
+        bonus: buildBonusState(walletWithJackpots),
         jackpotWins,
+        voucherPolicy: {
+          voucherId: activeVoucher.id,
+          maxCashout,
+          trackedBeforeBet,
+          trackedAfterBet,
+          jackpotExcludedFromCap: true,
+        },
       });
     } catch (err) {
       console.error('[GAMES] POST /games/:gameId/bet error:', err);
-      await t.rollback();
+      if (!t.finished) {
+        await t.rollback();
+      }
       return res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -276,8 +401,8 @@ router.post(
         return res.status(400).json({ error: 'Round already settled' });
       }
 
-      const win = parseFloat(winAmount || 0);
-      if (Number.isNaN(win) || win < 0) {
+      const requestedWin = parseFloat(winAmount || 0);
+      if (Number.isNaN(requestedWin) || requestedWin < 0) {
         await t.rollback();
         return res.status(400).json({ error: 'winAmount must be >= 0' });
       }
@@ -287,30 +412,116 @@ router.post(
         round?.metadata?.sessionId ||
         null;
 
-      let wallet = await getOrCreateWallet(round.playerId, req.auth?.tenantId || null, t);
-      const balanceBefore = parseFloat(wallet.balance || 0);
-      let balanceAfter = balanceBefore;
+      const tenantId = round.tenantId || req.auth?.tenantId || null;
+      let wallet = await getOrCreateWallet(round.playerId, tenantId, t);
+      const roundMetadata = round.metadata && typeof round.metadata === "object"
+        ? { ...round.metadata }
+        : {};
+
+      const activeVoucher = await resolveActiveVoucher({
+        wallet,
+        userId: round.playerId,
+        tenantId,
+        transaction: t,
+      });
+
+      if (!activeVoucher) {
+        await t.rollback();
+        return res.status(403).json({
+          ok: false,
+          code: "NO_ACTIVE_VOUCHER",
+          message: "No active redeemed voucher is linked to this wallet.",
+        });
+      }
+
+      const maxCashout = resolveVoucherMaxCashout(
+        activeVoucher,
+        Number(roundMetadata.maxCashout || 0)
+      );
+      if (!(maxCashout > 0)) {
+        await t.rollback();
+        return res.status(400).json({
+          ok: false,
+          code: "INVALID_VOUCHER_CAP",
+          message: "Voucher max cashout is not configured.",
+        });
+      }
+      const policySnapshot = readVoucherPolicy(activeVoucher);
+
+      const stakeAmount = Number(round.betAmount || 0);
+      const balanceBeforeSettle = toMoney(wallet.balance || 0);
+      const fallbackTrackedBefore = toMoney(
+        Math.max(
+          0,
+          Number(
+            roundMetadata.balanceBeforeBet ||
+              Math.min(maxCashout, balanceBeforeSettle + stakeAmount)
+          )
+        )
+      );
+      const fallbackTrackedAfter = toMoney(
+        Math.max(
+          0,
+          Number(roundMetadata.balanceAfterBet || fallbackTrackedBefore - stakeAmount)
+        )
+      );
+      const inferredBeforeBet = toMoney(
+        Math.max(
+          0,
+          Number(
+            roundMetadata.voucherTrackedBeforeBet ||
+              (policySnapshot.hasTrackedBalance
+                ? policySnapshot.trackedBalance + stakeAmount
+                : fallbackTrackedBefore)
+          )
+        )
+      );
+      const inferredAfterBet = toMoney(
+        Math.max(
+          0,
+          Number(
+            roundMetadata.voucherTrackedAfterBet ||
+              (policySnapshot.hasTrackedBalance ? policySnapshot.trackedBalance : fallbackTrackedAfter)
+          )
+        )
+      );
+      const payoutOutcome = computeVoucherDrivenPayout({
+        stakeAmount,
+        balanceBeforeBet: inferredBeforeBet,
+        balanceAfterBet: inferredAfterBet,
+        requestedWinAmount: requestedWin,
+        maxCashout,
+        policy: policySnapshot,
+      });
+
+      const win = toMoney(payoutOutcome.payoutAmount || 0);
+      let balanceAfter = toMoney(balanceBeforeSettle + win);
       let winTx = null;
 
       if (win > 0) {
-        balanceAfter = balanceBefore + win;
+        const balanceBeforeWinTx = balanceBeforeSettle;
         wallet.balance = balanceAfter;
         await wallet.save({ transaction: t });
 
         const winMetadata = {
           gameId,
           roundId: round.id,
+          voucherId: activeVoucher.id,
+          maxCashout,
+          payoutMode: payoutOutcome.mode,
+          requestedWinAmount: requestedWin,
+          computedWinAmount: win,
           ...(metadata || {}),
         };
         if (sessionId) winMetadata.sessionId = sessionId;
 
         winTx = await Transaction.create(
           {
-            tenantId: req.auth?.tenantId || null,
+            tenantId,
             walletId: wallet.id,
             type: 'game_win',
             amount: win,
-            balanceBefore,
+            balanceBefore: balanceBeforeWinTx,
             balanceAfter,
             reference: `game_round:${round.id}`,
             metadata: winMetadata,
@@ -318,26 +529,69 @@ router.post(
           },
           { transaction: t }
         );
+      } else {
+        wallet.balance = balanceBeforeSettle;
+        await wallet.save({ transaction: t });
       }
 
       round.winAmount = win;
       round.status = 'settled';
 
-      if (result) {
-        round.result = result;
-      }
-      if (metadata || sessionId) {
-        round.metadata = {
-          ...(round.metadata || {}),
-          ...(metadata || {}),
-          ...(sessionId ? { sessionId } : {}),
-        };
-      }
+      const nextResult = {
+        ...(round.result && typeof round.result === "object" ? round.result : {}),
+        ...(result && typeof result === "object" ? result : {}),
+        ...(result && typeof result !== "object" ? { providerResult: result } : {}),
+        voucherPolicy: {
+          voucherId: activeVoucher.id,
+          mode: payoutOutcome.mode,
+          maxCashout,
+          capApplied: Boolean(payoutOutcome.capApplied),
+          reachedOrExceededCap: Boolean(payoutOutcome.reachedOrExceededCap),
+          requestedWinAmount: requestedWin,
+          computedWinAmount: win,
+          decayStep: Number(payoutOutcome.decayStep || 0),
+          trackedBalanceAfterSettle: Number(payoutOutcome.balanceAfterSettle || 0),
+          jackpotExcludedFromCap: true,
+        },
+      };
+      round.result = nextResult;
+
+      round.metadata = {
+        ...roundMetadata,
+        ...(metadata || {}),
+        ...(sessionId ? { sessionId } : {}),
+        voucherId: activeVoucher.id,
+        maxCashout,
+        voucherOutcome: {
+          mode: payoutOutcome.mode,
+          requestedWinAmount: requestedWin,
+          computedWinAmount: win,
+          balanceBeforeSettle,
+          balanceAfterSettle: balanceAfter,
+          trackedBalanceBeforeSettle: inferredAfterBet,
+          trackedBalanceAfterSettle: Number(payoutOutcome.balanceAfterSettle || 0),
+          reachedOrExceededCap: Boolean(payoutOutcome.reachedOrExceededCap),
+          jackpotExcludedFromCap: true,
+        },
+      };
 
       const bet = parseFloat(round.betAmount || 0);
       if (bet > 0) {
         round.rtpSample = win / bet;
       }
+
+      activeVoucher.maxCashout = maxCashout;
+      const updatedMetadata = buildVoucherPolicyMetadata(activeVoucher, {
+        maxCashout,
+        payoutOutcome,
+        balanceAfterSettle: payoutOutcome.balanceAfterSettle,
+      });
+      updatedMetadata.voucherPolicy = {
+        ...(updatedMetadata.voucherPolicy || {}),
+        lastWalletBalance: balanceAfter,
+      };
+      activeVoucher.metadata = updatedMetadata;
+      await activeVoucher.save({ transaction: t });
 
       await round.save({ transaction: t });
 
@@ -355,7 +609,11 @@ router.post(
           winCents: toCents(win),
           balanceCents: toCents(balanceAfter),
           source: "games.settle",
-          meta: buildRequestMeta(req, { roundId: round.id }),
+          meta: buildRequestMeta(req, {
+            roundId: round.id,
+            payoutMode: round?.result?.voucherPolicy?.mode || "normal",
+            maxCashout: round?.result?.voucherPolicy?.maxCashout || null,
+          }),
         });
       }
 
@@ -363,10 +621,13 @@ router.post(
         wallet,
         round,
         winTransaction: winTx,
+        voucherPolicy: round?.result?.voucherPolicy || null,
       });
     } catch (err) {
       console.error('[GAMES] POST /games/:gameId/settle error:', err);
-      await t.rollback();
+      if (!t.finished) {
+        await t.rollback();
+      }
       return res.status(500).json({ error: 'Internal server error' });
     }
   }

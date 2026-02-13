@@ -1,20 +1,10 @@
 // src/services/staffAuthService.js
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const { StaffUser } = require("../models");
 const {
   ROLE_DEFAULT_PERMISSIONS,
 } = require("../constants/permissions");
-
-const STAFF_JWT_SECRET =
-  process.env.STAFF_JWT_SECRET || process.env.JWT_SECRET;
-const STAFF_JWT_TTL = process.env.STAFF_JWT_TTL || "12h";
-
-if (!STAFF_JWT_SECRET) {
-  console.warn(
-    "[STAFF_AUTH] No STAFF_JWT_SECRET configured; using JWT_SECRET or failing hard."
-  );
-}
+const { signAccessToken } = require("../utils/jwt");
 
 function buildEffectivePermissions(staff) {
   const base =
@@ -58,8 +48,11 @@ async function authenticateStaff({ email, password }) {
     perms,
   };
 
-  const token = jwt.sign(payload, STAFF_JWT_SECRET, {
-    expiresIn: STAFF_JWT_TTL,
+  const token = signAccessToken({
+    id: staff.id,
+    role: staff.role,
+    tenantId: staff.tenantId || null,
+    distributorId: staff.distributorId || null,
   });
 
   return {

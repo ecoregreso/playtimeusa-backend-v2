@@ -1,65 +1,64 @@
-const jwt = require('jsonwebtoken');
+const jwt = require("jsonwebtoken");
+const { v4: uuidv4 } = require("uuid");
+const { hashToken } = require("./token");
 
 const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
 const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
-const ADMIN_SECRET = process.env.JWT_SECRET;
 
-if (!ACCESS_SECRET || !REFRESH_SECRET || !ADMIN_SECRET) {
-  console.warn('[JWT] One or more JWT secrets are missing in .env');
+function ensureSecrets() {
+  if (!ACCESS_SECRET || !REFRESH_SECRET) {
+    console.warn("[JWT] Missing access/refresh secrets");
+  }
 }
 
-function signAccessToken(user) {
+function signAccessToken(user, opts = {}) {
+  ensureSecrets();
+  const jti = opts.jti || uuidv4();
+  const payload = {
+    sub: user.id,
+    role: user.role,
+    tenantId: user.tenantId || null,
+    distributorId: user.distributorId || null,
+    tokenType: "access",
+    jti,
+  };
+  if (opts.extra && typeof opts.extra === "object") {
+    Object.assign(payload, opts.extra);
+  }
+  return jwt.sign(payload, ACCESS_SECRET, { expiresIn: "15m" });
+}
+
+function signRefreshToken(user, opts = {}) {
+  ensureSecrets();
+  const jti = opts.jti || uuidv4();
   return jwt.sign(
     {
       sub: user.id,
       role: user.role,
       tenantId: user.tenantId || null,
       distributorId: user.distributorId || null,
-      type: 'access',
-    },
-    ACCESS_SECRET,
-    { expiresIn: '15m' }
-  );
-}
-
-function signRefreshToken(user) {
-  return jwt.sign(
-    {
-      sub: user.id,
-      role: user.role,
-      tenantId: user.tenantId || null,
-      distributorId: user.distributorId || null,
-      type: 'refresh',
+      tokenType: "refresh",
+      jti,
     },
     REFRESH_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: "7d" }
   );
 }
 
 function verifyAccessToken(token) {
-  return jwt.verify(token, ACCESS_SECRET);
+  const payload = jwt.verify(token, ACCESS_SECRET);
+  if (payload.tokenType !== "access") {
+    throw new Error("Invalid token type");
+  }
+  return payload;
 }
 
 function verifyRefreshToken(token) {
-  return jwt.verify(token, REFRESH_SECRET);
-}
-
-function signAdminToken(user) {
-  return jwt.sign(
-    {
-      sub: user.id,
-      role: user.role,
-      tenantId: user.tenantId || null,
-      distributorId: user.distributorId || null,
-      type: 'admin',
-    },
-    ADMIN_SECRET,
-    { expiresIn: '1h' }
-  );
-}
-
-function verifyAdminToken(token) {
-  return jwt.verify(token, ADMIN_SECRET);
+  const payload = jwt.verify(token, REFRESH_SECRET);
+  if (payload.tokenType !== "refresh") {
+    throw new Error("Invalid token type");
+  }
+  return payload;
 }
 
 module.exports = {
@@ -67,6 +66,5 @@ module.exports = {
   signRefreshToken,
   verifyAccessToken,
   verifyRefreshToken,
-  signAdminToken,
-  verifyAdminToken,
+  hashToken,
 };

@@ -14,6 +14,7 @@ const { sendUrgentEmail } = require("../utils/email");
 const { staffAuth, requirePermission } = require("../middleware/staffAuth");
 const { PERMISSIONS } = require("../constants/permissions");
 const { getJson } = require("../utils/ownerSettings");
+const { DEFAULT_VOUCHER_WIN_CAP_POLICY } = require("../services/voucherWinCapPolicyService");
 
 const router = express.Router();
 
@@ -30,6 +31,7 @@ const DEFAULT_SYSTEM_CONFIG = {
   withdrawalsEnabled: true,
   messagingEnabled: true,
   pushEnabled: true,
+  voucherWinCapPolicy: { ...DEFAULT_VOUCHER_WIN_CAP_POLICY },
 };
 
 async function getEffectiveConfig(tenantId) {

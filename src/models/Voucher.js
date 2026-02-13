@@ -31,6 +31,12 @@ const Voucher = sequelize.define('Voucher', {
     allowNull: false,
     defaultValue: 0,
   },
+  maxCashout: {
+    type: DataTypes.DECIMAL(18, 4),
+    allowNull: false,
+    defaultValue: 0,
+    field: "max_cashout",
+  },
   currency: {
     type: DataTypes.STRING(16),
     allowNull: false,

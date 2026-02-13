@@ -1,14 +1,23 @@
-// src/services/playerService.js
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-
+const { v4: uuidv4 } = require('uuid');
 const { Player, Wallet, Bonus } = require('../models');
+const { signAccessToken, signRefreshToken } = require('../utils/jwt');
+const { hashToken } = require('../utils/token');
+const { RefreshToken } = require('../models');
+const { getLock, recordFailure, recordSuccess } = require('../utils/lockout');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
+const REFRESH_DAYS = 7;
 
-async function loginPlayer({ loginCode, pinPlain }) {
+async function loginPlayer({ loginCode, pinPlain, req }) {
   if (!loginCode || !pinPlain) {
     throw new Error('CODE_AND_PIN_REQUIRED');
+  }
+
+  const lock = await getLock('player', loginCode, null);
+  if (lock.locked) {
+    const err = new Error('LOCKED');
+    err.lockUntil = lock.lockUntil;
+    throw err;
   }
 
   const player = await Player.findOne({
@@ -16,24 +25,33 @@ async function loginPlayer({ loginCode, pinPlain }) {
   });
 
   if (!player || player.status !== 'ACTIVE') {
+    await recordFailure({ subjectType: 'player', subjectId: loginCode, ip: req?.ip, userAgent: req?.get?.('user-agent') });
     throw new Error('INVALID_PLAYER_CREDENTIALS');
   }
 
   const ok = await bcrypt.compare(pinPlain, player.pinHash);
   if (!ok) {
+    await recordFailure({ subjectType: 'player', subjectId: loginCode, ip: req?.ip, userAgent: req?.get?.('user-agent') });
     throw new Error('INVALID_PLAYER_CREDENTIALS');
   }
 
-  const token = jwt.sign(
-    {
-      sub: player.id,
-      role: 'player'
-    },
-    JWT_SECRET,
-    { expiresIn: '12h' }
-  );
+  await recordSuccess({ subjectType: 'player', subjectId: loginCode });
 
-  return { token, player };
+  const accessJti = uuidv4();
+  const refreshJti = uuidv4();
+  const accessToken = signAccessToken(player, { jti: accessJti });
+  const refreshToken = signRefreshToken(player, { jti: refreshJti });
+  const expiresAt = new Date(Date.now() + REFRESH_DAYS * 24 * 60 * 60 * 1000);
+  await RefreshToken.create({
+    id: refreshJti,
+    userId: player.id,
+    tenantId: player.tenantId,
+    role: 'player',
+    hashedToken: hashToken(refreshToken),
+    expiresAt,
+  });
+
+  return { token: accessToken, refreshToken, player };
 }
 
 async function getPlayerState(playerId) {

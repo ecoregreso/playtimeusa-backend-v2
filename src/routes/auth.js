@@ -3,16 +3,24 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');          // <-- important fix
 const User = require('../models/User');
+const { RefreshToken } = require("../models");
+const { v4: uuidv4 } = require("uuid");
 const {
   signAccessToken,
   signRefreshToken,
   verifyRefreshToken,
-  signAdminToken,
 } = require('../utils/jwt');
 const { requireAuth } = require('../middleware/auth');
 const { buildRequestMeta, recordLedgerEvent } = require("../services/ledgerService");
 const { logEvent } = require("../services/auditService");
 const { initTenantContext } = require("../middleware/tenantContext");
+const { hashToken } = require("../utils/token");
+const { getLock, recordFailure, recordSuccess } = require("../utils/lockout");
+const { emitSecurityEvent } = require("../lib/security/events");
+const { buildLimiter } = require("../utils/rateLimit");
+
+const loginLimiter = buildLimiter({ windowMs: 15 * 60 * 1000, max: 20, message: "Too many login attempts" });
+const adminLoginLimiter = buildLimiter({ windowMs: 15 * 60 * 1000, max: 20, message: "Too many admin login attempts" });
 
 const router = express.Router();
 
@@ -28,6 +36,45 @@ function toPublicUser(user) {
   };
 }
 
+async function revokeAllRefreshTokens(userId, reason = "reuse_detected") {
+  await RefreshToken.update(
+    { revokedAt: new Date(), revokedReason: reason },
+    { where: { userId, revokedAt: { [Op.is]: null } } }
+  );
+}
+
+async function persistRefreshToken({ token, user, req, jti, expiresInDays = 7 }) {
+  const hashedToken = hashToken(token);
+  const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
+  await RefreshToken.create({
+    id: jti,
+    userId: user.id,
+    tenantId: user.tenantId || null,
+    role: user.role,
+    hashedToken,
+    expiresAt,
+    ip: req.auditContext?.ip || null,
+    userAgent: req.auditContext?.userAgent || null,
+  });
+}
+
+async function issueTokenPair(user, req) {
+  const accessJti = uuidv4();
+  const refreshJti = uuidv4();
+  const accessToken = signAccessToken(user, { jti: accessJti });
+  const refreshToken = signRefreshToken(user, { jti: refreshJti });
+  await persistRefreshToken({ token: refreshToken, user, req, jti: refreshJti });
+  return { accessToken, refreshToken, refreshJti, accessJti };
+}
+
+async function handleLockoutCheck({ subjectType, subjectId, tenantId, res }) {
+  const lock = await getLock(subjectType, subjectId, tenantId);
+  if (lock.locked) {
+    return res.status(429).json({ error: "Account temporarily locked", lockUntil: lock.lockUntil });
+  }
+  return null;
+}
+
 /**
  * POST /auth/register
  */
@@ -40,6 +87,14 @@ router.post('/register', async (req, res) => {
         .status(400)
         .json({ error: 'email, username, password, and tenantId are required' });
     }
+
+    const lock = await handleLockoutCheck({
+      subjectType: "staff_admin",
+      subjectId: `${tenantId}:${emailOrUsername.toLowerCase()}`,
+      tenantId,
+      res,
+    });
+    if (lock) return;
 
     return await initTenantContext(
       req,
@@ -72,14 +127,13 @@ router.post('/register', async (req, res) => {
           role: role || "player",
         });
 
-        const accessToken = signAccessToken(newUser);
-        const refreshToken = signRefreshToken(newUser);
+        const tokens = await issueTokenPair(newUser, req);
 
         return res.status(201).json({
           user: toPublicUser(newUser),
           tokens: {
-            accessToken,
-            refreshToken,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
           },
         });
       }
@@ -94,7 +148,7 @@ router.post('/register', async (req, res) => {
  * POST /auth/login
  * Body: { emailOrUsername, password }
  */
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
     const { emailOrUsername, password, tenantId } = req.body;
 
@@ -103,6 +157,14 @@ router.post('/login', async (req, res) => {
         .status(400)
         .json({ error: 'emailOrUsername, password, and tenantId are required' });
     }
+
+    const lockHit = await handleLockoutCheck({
+      subjectType: "user",
+      subjectId: `${tenantId}:${emailOrUsername.toLowerCase()}`,
+      tenantId,
+      res,
+    });
+    if (lockHit) return;
 
     return await initTenantContext(
       req,
@@ -124,6 +186,41 @@ router.post('/login', async (req, res) => {
         });
 
         if (!user) {
+          const fail = await recordFailure({
+            subjectType: "user",
+            subjectId: `${tenantId}:${emailOrUsername.toLowerCase()}`,
+            tenantId,
+            ip: req.auditContext?.ip || null,
+            userAgent: req.auditContext?.userAgent || null,
+          });
+          if (fail.lockUntil) {
+            emitSecurityEvent({
+              tenantId,
+              actorType: "player",
+              actorId: null,
+              ip: req.auditContext?.ip || null,
+              userAgent: req.auditContext?.userAgent || null,
+              method: req.method,
+              path: req.originalUrl,
+              requestId: req.requestId,
+              eventType: "lockout_triggered",
+              severity: 3,
+              details: { username: emailOrUsername, lockUntil: fail.lockUntil },
+            });
+          }
+          emitSecurityEvent({
+            tenantId,
+            actorType: "player",
+            actorId: null,
+            ip: req.auditContext?.ip || null,
+            userAgent: req.auditContext?.userAgent || null,
+            method: req.method,
+            path: req.originalUrl,
+            requestId: req.requestId,
+            eventType: "login_failed",
+            severity: 2,
+            details: { username: emailOrUsername },
+          });
           return res.status(401).json({ error: "Invalid credentials" });
         }
 
@@ -133,11 +230,47 @@ router.post('/login', async (req, res) => {
 
         const match = await user.checkPassword(password);
         if (!match) {
+          const fail = await recordFailure({
+            subjectType: "user",
+            subjectId: `${tenantId}:${emailOrUsername.toLowerCase()}`,
+            tenantId,
+            ip: req.auditContext?.ip || null,
+            userAgent: req.auditContext?.userAgent || null,
+          });
+          if (fail.lockUntil) {
+            emitSecurityEvent({
+              tenantId,
+              actorType: "player",
+              actorId: user.id,
+              ip: req.auditContext?.ip || null,
+              userAgent: req.auditContext?.userAgent || null,
+              method: req.method,
+              path: req.originalUrl,
+              requestId: req.requestId,
+              eventType: "lockout_triggered",
+              severity: 3,
+              details: { username: emailOrUsername, lockUntil: fail.lockUntil },
+            });
+          }
+          emitSecurityEvent({
+            tenantId,
+            actorType: "player",
+            actorId: user.id,
+            ip: req.auditContext?.ip || null,
+            userAgent: req.auditContext?.userAgent || null,
+            method: req.method,
+            path: req.originalUrl,
+            requestId: req.requestId,
+            eventType: "login_failed",
+            severity: 2,
+            details: { username: emailOrUsername },
+          });
           return res.status(401).json({ error: "Invalid credentials" });
         }
 
-        const accessToken = signAccessToken(user);
-        const refreshToken = signRefreshToken(user);
+        await recordSuccess({ subjectType: "user", subjectId: `${tenantId}:${emailOrUsername.toLowerCase()}`, tenantId });
+
+        const tokens = await issueTokenPair(user, req);
 
         if (user.role === "player") {
           await recordLedgerEvent({
@@ -154,8 +287,8 @@ router.post('/login', async (req, res) => {
         return res.json({
           user: toPublicUser(user),
           tokens: {
-            accessToken,
-            refreshToken,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
           },
         });
       }
@@ -179,6 +312,27 @@ router.post('/refresh', async (req, res) => {
 
     const payload = verifyRefreshToken(refreshToken);
 
+    const existing = await RefreshToken.findByPk(payload.jti);
+    const hashed = hashToken(refreshToken);
+
+    if (!existing || existing.revokedAt || existing.hashedToken !== hashed) {
+      await revokeAllRefreshTokens(payload.sub, "refresh_reuse_detected");
+      emitSecurityEvent({
+        tenantId: payload.tenantId || null,
+        actorType: "user",
+        actorId: payload.sub,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        method: req.method,
+        path: req.originalUrl,
+        requestId: req.requestId,
+        eventType: "refresh_reuse_detected",
+        severity: 3,
+        details: { jti: payload.jti },
+      });
+      return res.status(401).json({ error: "Refresh token reuse detected" });
+    }
+
     return await initTenantContext(
       req,
       res,
@@ -194,14 +348,22 @@ router.post('/refresh', async (req, res) => {
           return res.status(401).json({ error: "Invalid or inactive user" });
         }
 
-        const newAccessToken = signAccessToken(user);
-        const newRefreshToken = signRefreshToken(user);
+        // rotate
+        existing.revokedAt = new Date();
+        existing.revokedReason = "rotated";
+        await existing.save();
+
+        const tokens = await issueTokenPair(user, req);
+        await RefreshToken.update(
+          { replacedById: tokens.refreshJti },
+          { where: { id: existing.id } }
+        );
 
         return res.json({
           user: toPublicUser(user),
           tokens: {
-            accessToken: newAccessToken,
-            refreshToken: newRefreshToken,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
           },
         });
       }
@@ -215,7 +377,7 @@ router.post('/refresh', async (req, res) => {
 /**
  * POST /admin/login
  */
-router.post('/admin/login', async (req, res) => {
+router.post('/admin/login', adminLoginLimiter, async (req, res) => {
   try {
     const { emailOrUsername, password, tenantId } = req.body;
 
@@ -259,6 +421,28 @@ router.post('/admin/login', async (req, res) => {
         });
 
         if (!user || user.role !== "admin") {
+          const fail = await recordFailure({
+            subjectType: "staff_admin",
+            subjectId: `${tenantId}:${emailOrUsername.toLowerCase()}`,
+            tenantId,
+            ip: req.auditContext?.ip,
+            userAgent: req.auditContext?.userAgent,
+          });
+          if (fail.lockUntil) {
+            emitSecurityEvent({
+              tenantId,
+              actorType: "staff",
+              actorId: null,
+              ip: req.auditContext?.ip || null,
+              userAgent: req.auditContext?.userAgent || null,
+              method: req.method,
+              path: req.originalUrl,
+              requestId: req.requestId,
+              eventType: "lockout_triggered",
+              severity: 3,
+              details: { username: emailOrUsername, lockUntil: fail.lockUntil },
+            });
+          }
           await logEvent({
             eventType: "STAFF_LOGIN_FAIL",
             success: false,
@@ -278,6 +462,28 @@ router.post('/admin/login', async (req, res) => {
 
         const match = await user.checkPassword(password);
         if (!match) {
+          const fail = await recordFailure({
+            subjectType: "staff_admin",
+            subjectId: `${tenantId}:${emailOrUsername.toLowerCase()}`,
+            tenantId,
+            ip: req.auditContext?.ip,
+            userAgent: req.auditContext?.userAgent,
+          });
+          if (fail.lockUntil) {
+            emitSecurityEvent({
+              tenantId,
+              actorType: "staff",
+              actorId: null,
+              ip: req.auditContext?.ip || null,
+              userAgent: req.auditContext?.userAgent || null,
+              method: req.method,
+              path: req.originalUrl,
+              requestId: req.requestId,
+              eventType: "lockout_triggered",
+              severity: 3,
+              details: { username: emailOrUsername, lockUntil: fail.lockUntil },
+            });
+          }
           await logEvent({
             eventType: "STAFF_LOGIN_FAIL",
             success: false,
@@ -295,8 +501,8 @@ router.post('/admin/login', async (req, res) => {
           return res.status(401).json({ error: "Invalid admin credentials" });
         }
 
-        const adminToken = signAdminToken(user);
-        const accessToken = signAccessToken(user);
+        const tokens = await issueTokenPair(user, req);
+        await recordSuccess({ subjectType: "staff_admin", subjectId: `${tenantId}:${emailOrUsername.toLowerCase()}`, tenantId });
 
         await logEvent({
           eventType: "STAFF_LOGIN_SUCCESS",
@@ -319,8 +525,8 @@ router.post('/admin/login', async (req, res) => {
         return res.json({
           user: toPublicUser(user),
           tokens: {
-            adminToken,
-            accessToken,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
           },
         });
       }

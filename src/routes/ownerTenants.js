@@ -21,6 +21,10 @@ const { sequelize } = require("../db");
 const { staffAuth, requirePermission } = require("../middleware/staffAuth");
 const { PERMISSIONS, ROLE_DEFAULT_PERMISSIONS, ROLES } = require("../constants/permissions");
 const { getJson, setJson, safeParseJson, setSetting, getSetting } = require("../utils/ownerSettings");
+const {
+  DEFAULT_VOUCHER_WIN_CAP_POLICY,
+  normalizeVoucherWinCapPolicy,
+} = require("../services/voucherWinCapPolicyService");
 const { wipeAllData, wipeTenantData } = require("../services/wipeService");
 const { emitSecurityEvent } = require("../lib/security/events");
 const { writeAuditLog } = require("../lib/security/audit");
@@ -163,12 +167,15 @@ const DEFAULT_SYSTEM_CONFIG = {
   withdrawalsEnabled: true,
   messagingEnabled: true,
   pushEnabled: true,
+  voucherWinCapPolicy: { ...DEFAULT_VOUCHER_WIN_CAP_POLICY },
 };
 
 async function getSystemConfig() {
   const cfg = await getJson(SYSTEM_CONFIG_KEY, null);
   if (!cfg || typeof cfg !== "object") return { ...DEFAULT_SYSTEM_CONFIG };
-  return { ...DEFAULT_SYSTEM_CONFIG, ...cfg };
+  const merged = { ...DEFAULT_SYSTEM_CONFIG, ...cfg };
+  merged.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(merged.voucherWinCapPolicy);
+  return merged;
 }
 
 // --------------------
@@ -291,6 +298,9 @@ async function handleSetSystemConfig(req, res) {
     }
     const current = await getSystemConfig();
     const merged = { ...current, ...patch };
+    if (Object.prototype.hasOwnProperty.call(patch, "voucherWinCapPolicy")) {
+      merged.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(patch.voucherWinCapPolicy);
+    }
     await setJson(SYSTEM_CONFIG_KEY, merged);
     res.json({ ok: true, config: merged });
   } catch (err) {
@@ -567,6 +577,9 @@ async function handleSetTenantConfig(req, res) {
     }
     const current = await getJson(tenantConfigKey(tenantId), {});
     const merged = { ...(current || {}), ...patch };
+    if (Object.prototype.hasOwnProperty.call(patch, "voucherWinCapPolicy")) {
+      merged.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(patch.voucherWinCapPolicy);
+    }
     await setJson(tenantConfigKey(tenantId), merged);
     const system = await getSystemConfig();
     const effective = { ...system, ...merged };

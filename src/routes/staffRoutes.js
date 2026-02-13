@@ -1,26 +1,11 @@
 // src/routes/staffRoutes.js
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const router = express.Router();
 
 const { StaffUser } = require('../models');
 const { requireStaffAuth, requireStaffRole } = require('../middleware/staffAuth');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
-
-// Sign JWT for staff user
-function signStaffToken(staff) {
-  const payload = {
-    id: staff.id,
-    username: staff.username,
-    role: staff.role,
-  };
-
-  return jwt.sign(payload, JWT_SECRET, {
-    expiresIn: '12h',
-  });
-}
+const { signAccessToken } = require('../utils/jwt');
 
 // POST /api/v1/staff/login  (username + password)
 router.post('/login', async (req, res) => {
@@ -41,7 +26,11 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const token = signStaffToken(staff);
+    const token = signAccessToken({
+      id: staff.id,
+      role: staff.role,
+      tenantId: staff.tenantId || null,
+    });
 
     res.json({
       token,

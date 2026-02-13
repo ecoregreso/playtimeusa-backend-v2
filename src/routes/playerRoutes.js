@@ -2,16 +2,22 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 
 const { Op } = require("sequelize");
-const { sequelize, User, Wallet, Voucher, Transaction, Session, JackpotEvent } = require("../models");
+const { sequelize, User, Wallet, Voucher, Transaction, Session, JackpotEvent, RefreshToken } = require("../models");
+const { v4: uuidv4 } = require("uuid");
+const { hashToken } = require("../utils/token");
+const { getLock, recordFailure, recordSuccess } = require("../utils/lockout");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
+const { resolveVoucherMaxCashout } = require("../services/voucherOutcomeService");
 const { signAccessToken, signRefreshToken } = require("../utils/jwt");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { initTenantContext } = require("../middleware/tenantContext");
 const { emitSecurityEvent, maskCode } = require("../lib/security/events");
 const jackpotService = require("../services/jackpotService");
+const { buildLimiter } = require("../utils/rateLimit");
 
 const router = express.Router();
+const playerLoginLimiter = buildLimiter({ windowMs: 15 * 60 * 1000, max: 30, message: "Too many player login attempts" });
 
 async function resolveTenantForVoucher(code, pin) {
   if (!code || !pin) return null;
@@ -30,6 +36,31 @@ async function resolveTenantForVoucher(code, pin) {
     });
     return voucher?.tenantId || null;
   });
+}
+
+async function ensureNotLocked(subjectId, res) {
+  const lock = await getLock("voucher_login", subjectId, null);
+  if (lock.locked) {
+    res.status(429).json({ ok: false, error: "Account locked", lockUntil: lock.lockUntil });
+    return true;
+  }
+  return false;
+}
+
+async function storeRefreshToken(user, refreshToken, req) {
+  const refreshJti = uuidv4();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await RefreshToken.create({
+    id: refreshJti,
+    userId: user.id,
+    tenantId: user.tenantId || null,
+    role: user.role,
+    hashedToken: hashToken(refreshToken),
+    expiresAt,
+    ip: req.auditContext?.ip || null,
+    userAgent: req.auditContext?.userAgent || null,
+  });
+  return refreshJti;
 }
 
 // Simple ping for debugging
@@ -154,7 +185,7 @@ async function touchPlayerSession(userId, req) {
 
 // POST /api/v1/player/login
 // Accepts voucher code + pin, creates player (if needed), redeems voucher, and returns player tokens.
-router.post("/login", async (req, res) => {
+router.post("/login", playerLoginLimiter, async (req, res) => {
   const code = (req.body?.code || req.body?.userCode || "").trim();
   const pin = (req.body?.pin || "").trim();
   let tenantId = req.body?.tenantId || req.body?.tenant_id || null;
@@ -181,6 +212,9 @@ router.post("/login", async (req, res) => {
   }
 
   try {
+    const locked = await ensureNotLocked(code, res);
+    if (locked) return;
+
     const resolvedTenantId = await resolveTenantForVoucher(code, pin);
     if (resolvedTenantId) {
       tenantId = resolvedTenantId;
@@ -235,6 +269,7 @@ router.post("/login", async (req, res) => {
       });
 
       if (!user || user.role !== "player") {
+        await recordFailure({ subjectType: "voucher_login", subjectId: code, ip: req.auditContext?.ip, userAgent: req.auditContext?.userAgent });
         emitSecurityEvent({
           tenantId,
           actorType: "player",
@@ -257,6 +292,7 @@ router.post("/login", async (req, res) => {
 
       const validPin = await bcrypt.compare(pin, user.passwordHash || "");
       if (!validPin) {
+        await recordFailure({ subjectType: "voucher_login", subjectId: code, ip: req.auditContext?.ip, userAgent: req.auditContext?.userAgent });
         emitSecurityEvent({
           tenantId,
           actorType: "player",
@@ -281,6 +317,8 @@ router.post("/login", async (req, res) => {
       const bonusState = buildBonusState(wallet);
       const accessToken = signAccessToken(user);
       const refreshToken = signRefreshToken(user);
+      await storeRefreshToken(user, refreshToken, req);
+      await recordSuccess({ subjectType: "voucher_login", subjectId: code });
       const sessionId = await createPlayerSession(user, req);
 
       await recordLedgerEvent({
@@ -353,16 +391,22 @@ router.post("/login", async (req, res) => {
       });
 
       const wallet = await getOrCreateWallet(user.id, tenantId, t);
+      const amount = Number(voucher.amount || 0);
+      const bonus = Number(voucher.bonusAmount || 0);
+      const maxCashout = resolveVoucherMaxCashout(voucher, amount + bonus);
+      const priorPolicy =
+        voucher.metadata && voucher.metadata.voucherPolicy && typeof voucher.metadata.voucherPolicy === "object"
+          ? voucher.metadata.voucherPolicy
+          : {};
 
       // If not yet redeemed, apply credit now
       if (status !== "redeemed") {
         const before = Number(wallet.balance || 0);
-        const amount = Number(voucher.amount || 0);
-        const bonus = Number(voucher.bonusAmount || 0);
         redeemMeta = { voucherId: voucher.id, amount, bonus };
 
         wallet.balance = before + amount;
         wallet.bonusPending = Number(wallet.bonusPending || 0) + bonus;
+        wallet.activeVoucherId = voucher.id;
         await wallet.save({ transaction: t });
 
         await Transaction.create(
@@ -374,7 +418,13 @@ router.post("/login", async (req, res) => {
             balanceBefore: before,
             balanceAfter: wallet.balance,
             reference: `voucher:${voucher.code}`,
-            metadata: { voucherId: voucher.id, amount, bonusPending: bonus },
+            metadata: {
+              voucherId: voucher.id,
+              amount,
+              bonusPending: bonus,
+              maxCashout,
+              activeVoucherId: voucher.id,
+            },
             createdByUserId: user.id,
           },
           { transaction: t }
@@ -383,7 +433,23 @@ router.post("/login", async (req, res) => {
         voucher.status = "redeemed";
         voucher.redeemedAt = new Date();
         voucher.redeemedByUserId = user.id;
+        voucher.maxCashout = maxCashout;
+        voucher.metadata = {
+          ...(voucher.metadata || {}),
+          maxCashout,
+          voucherPolicy: {
+            ...priorPolicy,
+            maxCashout,
+            capReachedAt: priorPolicy.capReachedAt || null,
+            decayMode: Boolean(priorPolicy.decayMode),
+            decayRounds: Math.max(0, Number(priorPolicy.decayRounds || 0)),
+            trackedBalance: Number(priorPolicy.trackedBalance || amount),
+          },
+        };
         await voucher.save({ transaction: t });
+      } else if (wallet.activeVoucherId !== voucher.id) {
+        wallet.activeVoucherId = voucher.id;
+        await wallet.save({ transaction: t });
       }
 
       const bonusResult = await applyPendingBonusIfEligible({
@@ -409,6 +475,9 @@ router.post("/login", async (req, res) => {
 
     const sessionId = await createPlayerSession(result.user, req);
     const loginMeta = buildRequestMeta(req, { source: "voucher_login" });
+
+    await storeRefreshToken(result.user, result.tokens.refreshToken, req);
+    await recordSuccess({ subjectType: "voucher_login", subjectId: code });
 
     await recordLedgerEvent({
       ts: new Date(),
@@ -461,6 +530,7 @@ router.post("/login", async (req, res) => {
             code: result.voucher.code,
             status: result.voucher.status,
             redeemedAt: result.voucher.redeemedAt,
+            maxCashout: Number(result.voucher.maxCashout || 0),
           },
           bonus: bonusState,
           tokens: result.tokens,

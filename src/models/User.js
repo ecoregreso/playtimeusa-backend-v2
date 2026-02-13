@@ -27,7 +27,9 @@ const User = sequelize.define('User', {
     allowNull: false,
   },
   role: {
-    type: DataTypes.ENUM('player', 'cashier', 'agent', 'admin'),
+    type: sequelize.getDialect() === "sqlite"
+      ? DataTypes.STRING
+      : DataTypes.ENUM('player', 'cashier', 'agent', 'admin'),
     allowNull: false,
     defaultValue: 'player',
   },

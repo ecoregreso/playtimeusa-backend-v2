@@ -1,6 +1,7 @@
 const { DataTypes } = require('sequelize');
 const { sequelize } = require('../db');
 const User = require('./User');
+const Voucher = require('./Voucher');
 
 const Wallet = sequelize.define('Wallet', {
   id: {
@@ -33,10 +34,15 @@ const Wallet = sequelize.define('Wallet', {
     allowNull: false,
     defaultValue: 'FUN',
   },
+  activeVoucherId: {
+    type: DataTypes.UUID,
+    allowNull: true,
+    field: "active_voucher_id",
+  },
 }, {
   tableName: 'wallets',
   timestamps: true,
-  indexes: [{ fields: ["tenant_id"] }],
+  indexes: [{ fields: ["tenant_id"] }, { fields: ["active_voucher_id"] }],
 });
 
 User.hasOne(Wallet, {
@@ -47,6 +53,15 @@ User.hasOne(Wallet, {
 Wallet.belongsTo(User, {
   as: 'user',
   foreignKey: { name: 'userId', allowNull: false },
+});
+
+Voucher.hasMany(Wallet, {
+  as: 'activeWallets',
+  foreignKey: { name: 'activeVoucherId', allowNull: true },
+});
+Wallet.belongsTo(Voucher, {
+  as: 'activeVoucher',
+  foreignKey: { name: 'activeVoucherId', allowNull: true },
 });
 
 module.exports = Wallet;

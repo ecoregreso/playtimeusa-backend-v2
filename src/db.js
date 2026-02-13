@@ -11,14 +11,19 @@ if (!connectionString) {
   process.exit(1);
 }
 
+const isSqlite = connectionString.startsWith('sqlite');
+
 const sequelize = new Sequelize(connectionString, {
-  dialect: 'postgres',
+  dialect: isSqlite ? 'sqlite' : 'postgres',
   logging: process.env.LOG_LEVEL === 'debug' ? console.log : false,
-  dialectOptions: {
-    ssl: process.env.PGSSLMODE === 'require'
-      ? { require: true, rejectUnauthorized: false }
-      : undefined,
-  },
+  dialectOptions: isSqlite
+    ? undefined
+    : {
+        ssl:
+          process.env.PGSSLMODE === 'require'
+            ? { require: true, rejectUnauthorized: false }
+            : undefined,
+      },
 });
 
 async function initDb() {

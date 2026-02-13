@@ -19,6 +19,10 @@ function buildContext(ctx = {}) {
 }
 
 async function setLocal(transaction, key, value) {
+  if (sequelize.getDialect && sequelize.getDialect() === "sqlite") {
+    // SQLite does not support SET LOCAL; skip in test/dev sqlite runs.
+    return;
+  }
   if (!SET_KEYS.has(key)) {
     throw new Error(`Unsupported SET LOCAL key: ${key}`);
   }

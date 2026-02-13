@@ -13,8 +13,10 @@ const {
 } = require("../middleware/staffAuth");
 const { PERMISSIONS } = require("../constants/permissions");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
+const { buildLimiter } = require("../utils/rateLimit");
 
 const router = express.Router();
+const financeLimiter = buildLimiter({ windowMs: 15 * 60 * 1000, max: 50, message: "Too many finance requests" });
 
 // GET /api/v1/deposits/admin/pending
 router.get(
@@ -49,6 +51,7 @@ router.get(
 // POST /api/v1/deposits/dev/mark-paid
 router.post(
   "/deposits/dev/mark-paid",
+  financeLimiter,
   staffAuth,
   requirePermission(PERMISSIONS.FINANCE_WRITE),
   async (req, res) => {
@@ -154,6 +157,7 @@ router.get(
 // POST /api/v1/withdrawals/dev/mark-sent
 router.post(
   "/withdrawals/dev/mark-sent",
+  financeLimiter,
   staffAuth,
   requirePermission(PERMISSIONS.FINANCE_WRITE),
   async (req, res) => {

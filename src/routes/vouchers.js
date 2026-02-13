@@ -11,11 +11,23 @@ const { Voucher, Wallet, Transaction, User, TenantVoucherPool, TenantWallet } = 
 const { generateVoucherQrPng } = require("../utils/qr");
 const { getJson } = require("../utils/ownerSettings");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
+const { resolveVoucherMaxCashout } = require("../services/voucherOutcomeService");
+const {
+  WIN_CAP_MODES,
+  DEFAULT_VOUCHER_WIN_CAP_POLICY,
+  normalizeVoucherWinCapPolicy,
+  resolveVoucherWinCapSelection,
+  computeMaxCashoutFromPercent,
+} = require("../services/voucherWinCapPolicyService");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 const { logEvent } = require("../services/auditService");
 const { emitSecurityEvent, maskCode } = require("../lib/security/events");
+const { buildLimiter } = require("../utils/rateLimit");
+const { getLock, recordFailure, recordSuccess } = require("../utils/lockout");
 
 const router = express.Router();
+
+const redeemLimiter = buildLimiter({ windowMs: 15 * 60 * 1000, max: 30, message: "Too many voucher redeem attempts" });
 
 function requireStaffRole(...roles) {
   return (req, res, next) => {
@@ -56,13 +68,24 @@ const DEFAULT_SYSTEM_CONFIG = {
   withdrawalsEnabled: true,
   messagingEnabled: true,
   pushEnabled: true,
+  voucherWinCapPolicy: { ...DEFAULT_VOUCHER_WIN_CAP_POLICY },
 };
 
 async function getEffectiveConfig(tenantId) {
   const system = await getJson(SYSTEM_CONFIG_KEY, DEFAULT_SYSTEM_CONFIG);
-  if (!tenantId) return { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}) };
+  if (!tenantId) {
+    const effectiveNoTenant = { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}) };
+    effectiveNoTenant.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(
+      effectiveNoTenant.voucherWinCapPolicy
+    );
+    return effectiveNoTenant;
+  }
   const tenant = await getJson(tenantConfigKey(tenantId), {});
-  return { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}), ...(tenant || {}) };
+  const effective = { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}), ...(tenant || {}) };
+  effective.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(
+    effective.voucherWinCapPolicy
+  );
+  return effective;
 }
 
 function normalizeTenantId(value) {
@@ -115,9 +138,58 @@ function randomNumeric(length) {
   return out;
 }
 
-async function getOrCreateWallet(userId, tenantId, currency = "FUN") {
+function computeVoucherMaxCashout({
+  amount,
+  bonusAmount,
+  requestedMaxCashout,
+  requestedWinCapMode,
+  requestedWinCapPercent,
+  policyRaw,
+}) {
+  const normalizedPolicy = normalizeVoucherWinCapPolicy(policyRaw);
+  const totalCredit = Number(amount || 0) + Number(bonusAmount || 0);
+
+  if (requestedMaxCashout != null) {
+    return {
+      maxCashout: resolveVoucherMaxCashout(
+        {
+          amount,
+          bonusAmount,
+          maxCashout: requestedMaxCashout,
+          totalCredit,
+        },
+        totalCredit
+      ),
+      capMode: "manual_amount",
+      capPercent: null,
+      capSource: "request_manual",
+      normalizedPolicy,
+    };
+  }
+
+  const selection = resolveVoucherWinCapSelection({
+    policyRaw: normalizedPolicy,
+    mode: requestedWinCapMode,
+    percent: requestedWinCapPercent,
+  });
+
+  return {
+    maxCashout: computeMaxCashoutFromPercent({
+      amount,
+      bonusAmount,
+      selectedPercent: selection.selectedPercent,
+    }),
+    capMode: selection.mode,
+    capPercent: selection.selectedPercent,
+    capSource: selection.source,
+    normalizedPolicy: selection.policy,
+  };
+}
+
+async function getOrCreateWallet(userId, tenantId, currency = "FUN", transaction = undefined) {
   let wallet = await Wallet.findOne({
     where: { userId, tenantId, currency },
+    transaction,
   });
 
   if (!wallet) {
@@ -128,7 +200,7 @@ async function getOrCreateWallet(userId, tenantId, currency = "FUN") {
       balance: 0,
       bonusPending: 0,
       bonusUnacked: 0,
-    });
+    }, { transaction });
   }
 
   return wallet;
@@ -137,13 +209,15 @@ async function getOrCreateWallet(userId, tenantId, currency = "FUN") {
 async function creditVoucherToWallet({ voucher, userId, staff, transaction }) {
   const t = transaction;
   const currency = voucher.currency || "FUN";
-  const wallet = await getOrCreateWallet(userId, voucher.tenantId, currency);
+  const wallet = await getOrCreateWallet(userId, voucher.tenantId, currency, t);
   const amount = Number(voucher.amount || 0);
   const bonus = Number(voucher.bonusAmount || 0);
   const before = Number(wallet.balance || 0);
+  const maxCashout = resolveVoucherMaxCashout(voucher, amount + bonus);
 
   wallet.balance = before + amount;
   wallet.bonusPending = Number(wallet.bonusPending || 0) + bonus;
+  wallet.activeVoucherId = voucher.id;
   await wallet.save({ transaction: t });
 
   await Transaction.create(
@@ -158,6 +232,8 @@ async function creditVoucherToWallet({ voucher, userId, staff, transaction }) {
       metadata: {
         voucherId: voucher.id,
         bonusPending: bonus,
+        maxCashout,
+        activeVoucherId: voucher.id,
         redeemedByStaffId: staff?.id || null,
         redeemerRole: staff?.role || null,
       },
@@ -176,8 +252,29 @@ async function creditVoucherToWallet({ voucher, userId, staff, transaction }) {
   voucher.status = "redeemed";
   voucher.redeemedAt = new Date();
   voucher.redeemedByUserId = userId;
+  const priorPolicy =
+    voucher.metadata && voucher.metadata.voucherPolicy && typeof voucher.metadata.voucherPolicy === "object"
+      ? voucher.metadata.voucherPolicy
+      : {};
+  voucher.maxCashout = maxCashout;
   voucher.metadata = {
     ...(voucher.metadata || {}),
+    maxCashout,
+    voucherPolicy: {
+      ...priorPolicy,
+      maxCashout,
+      capReachedAt: priorPolicy.capReachedAt || null,
+      decayMode: Boolean(priorPolicy.decayMode),
+      decayRounds: Math.max(0, Number(priorPolicy.decayRounds || 0)),
+      decayRate: Number(priorPolicy.decayRate || DEFAULT_VOUCHER_WIN_CAP_POLICY.decayRate),
+      minDecayAmount: Number(
+        priorPolicy.minDecayAmount || DEFAULT_VOUCHER_WIN_CAP_POLICY.minDecayAmount
+      ),
+      stakeDecayMultiplier: Number(
+        priorPolicy.stakeDecayMultiplier || DEFAULT_VOUCHER_WIN_CAP_POLICY.stakeDecayMultiplier
+      ),
+      trackedBalance: Number(priorPolicy.trackedBalance || amount),
+    },
     redeemedByStaffId: staff?.id || null,
     redeemedByRole: staff?.role || null,
   };
@@ -275,11 +372,24 @@ router.post(
   requireStaffPermission(PERMISSIONS.VOUCHER_WRITE),
   enforceVouchersEnabled(),
   async (req, res) => {
+    let tenantId = req.staff?.tenantId || null;
     try {
-      const { amount, bonusAmount, currency } = req.body;
+      const { amount, bonusAmount, currency, maxCashout, winCapMode, winCapPercent } = req.body;
 
       const valueAmount = Number(amount || 0);
       const valueBonus = Number(bonusAmount || 0);
+      const valueMaxCashoutRaw =
+        maxCashout === undefined || maxCashout === null || maxCashout === ""
+          ? null
+          : Number(maxCashout);
+      const valueWinCapPercentRaw =
+        winCapPercent === undefined || winCapPercent === null || winCapPercent === ""
+          ? null
+          : Number(winCapPercent);
+      const valueWinCapMode =
+        winCapMode === undefined || winCapMode === null || winCapMode === ""
+          ? null
+          : String(winCapMode);
 
       if (!Number.isFinite(valueAmount) || valueAmount <= 0) {
         await logEvent({
@@ -301,13 +411,42 @@ router.post(
         return res.status(400).json({ error: "Invalid amount" });
       }
 
+      if (valueMaxCashoutRaw !== null && (!Number.isFinite(valueMaxCashoutRaw) || valueMaxCashoutRaw <= 0)) {
+        return res.status(400).json({ error: "Invalid maxCashout" });
+      }
+      if (
+        valueWinCapMode !== null &&
+        valueWinCapMode !== WIN_CAP_MODES.FIXED &&
+        valueWinCapMode !== WIN_CAP_MODES.RANDOM
+      ) {
+        return res.status(400).json({ error: "Invalid winCapMode" });
+      }
+      if (
+        valueWinCapPercentRaw !== null &&
+        (!Number.isFinite(valueWinCapPercentRaw) || valueWinCapPercentRaw <= 0)
+      ) {
+        return res.status(400).json({ error: "Invalid winCapPercent" });
+      }
+
       // Keep voucher code numeric so players can log in with the visible userCode
       const code = randomNumeric(6);
       const pin = randomNumeric(6);
       const userCode = code; // mirrors code; not stored separately
       const totalCredit = valueAmount + valueBonus;
+      const capResolution = computeVoucherMaxCashout({
+        amount: valueAmount,
+        bonusAmount: valueBonus,
+        requestedMaxCashout: valueMaxCashoutRaw,
+        requestedWinCapMode: valueWinCapMode,
+        requestedWinCapPercent: valueWinCapPercentRaw,
+        policyRaw: req.effectiveConfig?.voucherWinCapPolicy || DEFAULT_VOUCHER_WIN_CAP_POLICY,
+      });
+      const valueMaxCashout = capResolution.maxCashout;
 
-      let tenantId = req.staff?.tenantId || null;
+      if (valueMaxCashout < totalCredit) {
+        return res.status(400).json({ error: "maxCashout must be greater than or equal to total voucher credit" });
+      }
+
       const ownerTenantId =
         req.staff?.role === "owner"
           ? (typeof req.body?.tenantId === "string"
@@ -407,11 +546,31 @@ router.post(
                 amount: valueAmount,
                 bonusAmount: valueBonus,
                 totalCredit,
+                maxCashout: valueMaxCashout,
                 currency: currencyCode,
                 status: "new",
                 createdBy: req.staff?.id || null,
                 metadata: {
                   userCode,
+                  maxCashout: valueMaxCashout,
+                  capStrategy: {
+                    mode: capResolution.capMode,
+                    percent: capResolution.capPercent,
+                    source: capResolution.capSource,
+                    voucherAmountBase: valueAmount,
+                  },
+                  voucherPolicy: {
+                    maxCashout: valueMaxCashout,
+                    capReachedAt: null,
+                    decayMode: false,
+                    decayRounds: 0,
+                    capMode: capResolution.capMode,
+                    capPercent: capResolution.capPercent,
+                    decayRate: capResolution.normalizedPolicy.decayRate,
+                    minDecayAmount: capResolution.normalizedPolicy.minDecayAmount,
+                    stakeDecayMultiplier: capResolution.normalizedPolicy.stakeDecayMultiplier,
+                    trackedBalance: valueAmount,
+                  },
                   source: "admin_panel",
                 },
               },
@@ -452,6 +611,9 @@ router.post(
         voucher: {
           ...voucher.toJSON(),
           status: "new", // front-end expects lowercase
+          maxCashout: valueMaxCashout,
+          winCapMode: capResolution.capMode,
+          winCapPercent: capResolution.capPercent,
         },
         pin,       // for operator printing / handoff
         userCode,  // explicit top-level
@@ -476,6 +638,9 @@ router.post(
           voucherId: voucher.id,
           amountCents: toCents(valueAmount),
           bonusCents: toCents(valueBonus),
+          maxCashoutCents: toCents(valueMaxCashout),
+          winCapMode: capResolution.capMode,
+          winCapPercent: capResolution.capPercent,
           currency: voucher.currency || "FUN",
         },
       });
@@ -498,6 +663,9 @@ router.post(
           voucherId: voucher.id,
           amount: valueAmount,
           bonusAmount: valueBonus,
+          maxCashout: valueMaxCashout,
+          winCapMode: capResolution.capMode,
+          winCapPercent: capResolution.capPercent,
           currency: voucher.currency || "FUN",
         },
       });
@@ -529,6 +697,7 @@ router.post(
 // POST /vouchers/staff/redeem – staff-assisted redeem into a player's wallet
 router.post(
   "/staff/redeem",
+  redeemLimiter,
   staffAuth,
   requireStaffRole("owner", "operator", "agent", "distributor", "cashier"),
   requireStaffPermission(PERMISSIONS.VOUCHER_WRITE),
@@ -539,6 +708,11 @@ router.post(
 
     if (!code || !pin || !userId) {
       return res.status(400).json({ error: "code, pin, and userId are required" });
+    }
+
+    const lock = await getLock("voucher_redeem", code, tenantId);
+    if (lock.locked) {
+      return res.status(429).json({ error: "Voucher locked", lockUntil: lock.lockUntil });
     }
 
     const t = await sequelize.transaction({ transaction: req.transaction });
@@ -555,6 +729,7 @@ router.post(
       });
 
       if (!voucher) {
+        await recordFailure({ subjectType: "voucher_redeem", subjectId: code, tenantId, ip: req.auditContext?.ip, userAgent: req.auditContext?.userAgent });
         await t.rollback();
         return res.status(404).json({ error: "Voucher not found or already redeemed" });
       }
@@ -604,11 +779,38 @@ router.post(
       });
 
       await t.commit();
+      await recordSuccess({ subjectType: "voucher_redeem", subjectId: code, tenantId });
+      emitSecurityEvent({
+        tenantId,
+        actorType: "staff",
+        actorId: req.staff?.id || null,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        method: req.method,
+        path: req.originalUrl,
+        requestId: req.requestId,
+        eventType: "voucher_redeem_success",
+        severity: 1,
+        details: { code: voucher.code, userId },
+      });
       const safeVoucher = sanitizeVoucher(voucher);
       return res.json({ ok: true, voucher: safeVoucher, wallet });
     } catch (err) {
       await t.rollback();
       console.error("[VOUCHERS] POST /staff/redeem error:", err);
+      emitSecurityEvent({
+        tenantId,
+        actorType: "staff",
+        actorId: req.staff?.id || null,
+        ip: req.auditContext?.ip || null,
+        userAgent: req.auditContext?.userAgent || null,
+        method: req.method,
+        path: req.originalUrl,
+        requestId: req.requestId,
+        eventType: "voucher_redeem_failed",
+        severity: 2,
+        details: { code: code || null, reason: err.message || "unknown" },
+      });
       return res.status(500).json({ error: "Failed to redeem voucher" });
     }
   }
@@ -844,9 +1046,11 @@ router.post(
       const amount = Number(voucher.amount || 0);
       const bonus = Number(voucher.bonusAmount || 0);
       const totalCredit = amount + bonus;
+      const maxCashout = resolveVoucherMaxCashout(voucher, amount + bonus);
 
       wallet.balance = before + amount;
       wallet.bonusPending = Number(wallet.bonusPending || 0) + bonus;
+      wallet.activeVoucherId = voucher.id;
       await wallet.save();
 
       const tx = await Transaction.create({
@@ -861,6 +1065,8 @@ router.post(
           voucherId: voucher.id,
           amount,
           bonusPending: bonus,
+          maxCashout,
+          activeVoucherId: voucher.id,
         },
         createdByUserId: userId,
       });
@@ -868,6 +1074,30 @@ router.post(
       voucher.status = "redeemed";
       voucher.redeemedAt = new Date();
       voucher.redeemedByUserId = userId;
+      const priorPolicy =
+        voucher.metadata && voucher.metadata.voucherPolicy && typeof voucher.metadata.voucherPolicy === "object"
+          ? voucher.metadata.voucherPolicy
+          : {};
+      voucher.maxCashout = maxCashout;
+      voucher.metadata = {
+        ...(voucher.metadata || {}),
+        maxCashout,
+        voucherPolicy: {
+          ...priorPolicy,
+          maxCashout,
+          capReachedAt: priorPolicy.capReachedAt || null,
+          decayMode: Boolean(priorPolicy.decayMode),
+          decayRounds: Math.max(0, Number(priorPolicy.decayRounds || 0)),
+          decayRate: Number(priorPolicy.decayRate || DEFAULT_VOUCHER_WIN_CAP_POLICY.decayRate),
+          minDecayAmount: Number(
+            priorPolicy.minDecayAmount || DEFAULT_VOUCHER_WIN_CAP_POLICY.minDecayAmount
+          ),
+          stakeDecayMultiplier: Number(
+            priorPolicy.stakeDecayMultiplier || DEFAULT_VOUCHER_WIN_CAP_POLICY.stakeDecayMultiplier
+          ),
+          trackedBalance: Number(priorPolicy.trackedBalance || amount),
+        },
+      };
       await voucher.save();
 
       await applyPendingBonusIfEligible({
@@ -893,6 +1123,7 @@ router.post(
           voucherId: voucher.id,
           amountCents: toCents(amount),
           bonusCents: toCents(bonus),
+          maxCashoutCents: toCents(maxCashout),
           currency,
         },
       });
@@ -916,6 +1147,7 @@ router.post(
           code,
           amount,
           bonus,
+          maxCashout,
           currency,
         },
       });

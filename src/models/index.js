@@ -33,6 +33,8 @@ const Jackpot = require("./Jackpot");
 const JackpotEvent = require("./JackpotEvent");
 const JackpotContribution = require("./JackpotContribution");
 const ShiftClosure = require("./ShiftClosure");
+const RefreshToken = require("./RefreshToken");
+const AuthLockout = require("./AuthLockout");
 
 Tenant.hasMany(User, { foreignKey: "tenantId" });
 User.belongsTo(Tenant, { foreignKey: "tenantId" });
@@ -157,4 +159,6 @@ module.exports = {
   JackpotEvent,
   JackpotContribution,
   ShiftClosure,
+  RefreshToken,
+  AuthLockout,
 };

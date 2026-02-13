@@ -10,8 +10,11 @@ const {
 const { ROLE_DEFAULT_PERMISSIONS } = require("../constants/permissions");
 const { initTenantContext } = require("../middleware/tenantContext");
 const { emitSecurityEvent } = require("../lib/security/events");
+const { getLock, recordFailure, recordSuccess } = require("../utils/lockout");
+const { buildLimiter } = require("../utils/rateLimit");
 
 const router = express.Router();
+const staffLoginLimiter = buildLimiter({ windowMs: 15 * 60 * 1000, max: 20, message: "Too many staff login attempts" });
 
 function buildPermissions(staff) {
   const explicit = Array.isArray(staff.permissions) ? staff.permissions : [];
@@ -20,7 +23,7 @@ function buildPermissions(staff) {
 }
 
 // POST /api/v1/staff/login
-router.post("/login", async (req, res) => {
+router.post("/login", staffLoginLimiter, async (req, res) => {
   try {
     const { username, password, tenantId: rawTenantId } = req.body || {};
 
@@ -47,6 +50,11 @@ router.post("/login", async (req, res) => {
         .json({ ok: false, error: "username and password are required" });
     }
 
+    const lock = await getLock("staff", `${tenantId || "owner"}:${usernameTrim}`, tenantId || null);
+    if (lock.locked) {
+      return res.status(429).json({ ok: false, error: "Account locked", lockUntil: lock.lockUntil });
+    }
+
     return await initTenantContext(
       req,
       res,
@@ -69,6 +77,22 @@ router.post("/login", async (req, res) => {
               },
         });
         if (!staff || !staff.isActive) {
+          const fail = await recordFailure({ subjectType: "staff", subjectId: `${tenantId || "owner"}:${usernameTrim}`, tenantId: tenantId || null, ip: req.auditContext?.ip, userAgent: req.auditContext?.userAgent });
+          if (fail.lockUntil) {
+            emitSecurityEvent({
+              tenantId: tenantId || null,
+              actorType: "staff",
+              actorId: null,
+              ip: req.auditContext?.ip || null,
+              userAgent: req.auditContext?.userAgent || null,
+              method: req.method,
+              path: req.originalUrl,
+              requestId: req.requestId,
+              eventType: "lockout_triggered",
+              severity: 3,
+              details: { username: usernameTrim, lockUntil: fail.lockUntil },
+            });
+          }
           emitSecurityEvent({
             tenantId: tenantId || null,
             actorType: "staff",
@@ -87,6 +111,22 @@ router.post("/login", async (req, res) => {
 
         const ok = await bcrypt.compare(password, staff.passwordHash);
         if (!ok) {
+          const fail = await recordFailure({ subjectType: "staff", subjectId: `${tenantId || "owner"}:${usernameTrim}`, tenantId: tenantId || null, ip: req.auditContext?.ip, userAgent: req.auditContext?.userAgent });
+          if (fail.lockUntil) {
+            emitSecurityEvent({
+              tenantId: tenantId || null,
+              actorType: "staff",
+              actorId: null,
+              ip: req.auditContext?.ip || null,
+              userAgent: req.auditContext?.userAgent || null,
+              method: req.method,
+              path: req.originalUrl,
+              requestId: req.requestId,
+              eventType: "lockout_triggered",
+              severity: 3,
+              details: { username: usernameTrim, lockUntil: fail.lockUntil },
+            });
+          }
           emitSecurityEvent({
             tenantId: tenantId || null,
             actorType: "staff",
@@ -105,6 +145,7 @@ router.post("/login", async (req, res) => {
 
         const permissions = buildPermissions(staff);
         const token = signStaffToken({ ...staff.toJSON(), permissions });
+        await recordSuccess({ subjectType: "staff", subjectId: `${tenantId || "owner"}:${usernameTrim}`, tenantId: tenantId || null });
         emitSecurityEvent({
           tenantId: staff.tenantId || tenantId || null,
           actorType: staff.role === "owner" ? "owner" : "staff",

@@ -1,15 +1,11 @@
 // src/middleware/staffAuth.js
-const jwt = require("jsonwebtoken");
 const { StaffUser } = require("../models");
 const { initTenantContext } = require("./tenantContext");
 const {
   PERMISSIONS,
   ROLE_DEFAULT_PERMISSIONS,
 } = require("../constants/permissions");
-
-const STAFF_JWT_SECRET =
-  process.env.STAFF_JWT_SECRET || process.env.JWT_SECRET || "dev-staff-secret";
-const STAFF_JWT_EXPIRES_IN = process.env.STAFF_JWT_EXPIRES_IN || "12h";
+const { signAccessToken, verifyAccessToken } = require("../utils/jwt");
 
 function normalizePermissions(staff) {
   const fromDb = Array.isArray(staff.permissions) ? staff.permissions : [];
@@ -19,18 +15,16 @@ function normalizePermissions(staff) {
 }
 
 function signStaffToken(staff) {
-    const permissions = normalizePermissions(staff);
-    const payload = {
-      sub: staff.id,
-      type: "staff",
+  const permissions = normalizePermissions(staff);
+  return signAccessToken(
+    {
+      id: staff.id,
       role: staff.role,
       tenantId: staff.tenantId || null,
       distributorId: staff.distributorId || null,
-      permissions,
-    };
-  return jwt.sign(payload, STAFF_JWT_SECRET, {
-    expiresIn: STAFF_JWT_EXPIRES_IN,
-  });
+    },
+    { extra: { permissions } }
+  );
 }
 
 function getToken(req) {
@@ -58,15 +52,11 @@ function requireStaffAuth(requiredPermissions = []) {
 
     let payload;
     try {
-      payload = jwt.verify(token, STAFF_JWT_SECRET);
+      payload = verifyAccessToken(token);
     } catch (err) {
       return res
         .status(401)
         .json({ ok: false, error: "Invalid or expired staff token" });
-    }
-
-    if (!payload || payload.type !== "staff") {
-      return res.status(403).json({ ok: false, error: "Not a staff token" });
     }
 
     try {

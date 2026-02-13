@@ -4,6 +4,8 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const reportsRoutes = require("./routes/adminReports");
 const analyticsRoutes = require("./routes/adminAnalytics");
 const safetyRoutes = require("./routes/safety");
@@ -35,6 +37,8 @@ const adminShiftsRoutes = require("./routes/adminShifts");
 const { buildNotImplementedRouter } = require("./routes/notImplemented");
 const ownerSecurityRoutes = require("./routes/ownerSecurity");
 const { requestIdMiddleware } = require("./lib/security/requestId");
+const { validateEnv } = require("./utils/env");
+const { buildLimiter } = require("./utils/rateLimit");
 
 const {
   StaffUser,
@@ -62,6 +66,9 @@ if (NODE_ENV === "production" && !AUDIT_HMAC_SECRET) {
   console.error("[SECURITY] AUDIT_HMAC_SECRET is required in production");
   process.exit(1);
 }
+
+// Enforce secrets early
+validateEnv();
 /**
  * CORS origin list
  * - FRONTEND_ORIGIN supports comma-separated origins
@@ -93,6 +100,7 @@ app.set("trust proxy", 1);
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(requestIdMiddleware);
 
 function normalizeErrorPayload(payload) {
