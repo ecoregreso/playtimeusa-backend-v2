@@ -16,8 +16,15 @@ async function getApplied(client) {
 }
 
 async function applyMigration(client, id, sql) {
-  await client.query(sql);
-  await client.query("INSERT INTO schema_migrations (id) VALUES ($1)", [id]);
+  await client.query("BEGIN");
+  try {
+    await client.query(sql);
+    await client.query("INSERT INTO schema_migrations (id) VALUES ($1)", [id]);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  }
 }
 
 async function runMigrations() {
@@ -31,6 +38,11 @@ async function runMigrations() {
   await client.connect();
 
   try {
+    // Migrations must bypass tenant RLS policies to touch existing rows safely.
+    await client.query("SELECT set_config('app.role', 'owner', false)");
+    await client.query("SELECT set_config('app.user_id', 'migration', false)");
+    await client.query("SELECT set_config('app.tenant_id', '', false)");
+
     await ensureSchemaTable(client);
     const applied = await getApplied(client);
 

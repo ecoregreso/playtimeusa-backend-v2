@@ -1,3 +1,8 @@
+-- RLS-aware backfill: ensure migrations run with owner context.
+SELECT set_config('app.role', 'owner', false);
+SELECT set_config('app.user_id', 'migration', false);
+SELECT set_config('app.tenant_id', '', false);
+
 ALTER TABLE IF EXISTS vouchers
   ADD COLUMN IF NOT EXISTS max_cashout NUMERIC(18, 4);
 
