@@ -949,8 +949,12 @@ async function getErrorMetrics(range) {
 
 async function getCashierPerformance(range) {
   const hasVouchers = await tableExists("vouchers");
+  const hasTransactions = await tableExists("transactions");
   if (!hasVouchers) {
-    return { series: [], totals: { issued: 0, redeemed: 0, expired: 0 } };
+    return {
+      series: [],
+      totals: { issued: 0, redeemed: 0, expired: 0, cashedOut: 0, cashedOutAmount: 0 },
+    };
   }
 
   const bucketExpr = buildBucketExpr("createdAt", range);
@@ -976,11 +980,23 @@ async function getCashierPerformance(range) {
     GROUP BY t
     ORDER BY t ASC
   `;
+  const cashedOutSql = `
+    SELECT ${bucketExpr} AS t, COUNT(*) AS count, SUM(COALESCE("amount", 0)) AS amount
+    FROM transactions
+    WHERE "type" = 'voucher_debit'
+      AND "createdAt" >= :startDate
+      AND "createdAt" < :endDateExclusive
+    GROUP BY t
+    ORDER BY t ASC
+  `;
   const replacements = { startDate: range.startDate, endDateExclusive: range.endDateExclusive };
-  const [issuedRows, redeemedRows, expiredRows] = await Promise.all([
+  const [issuedRows, redeemedRows, expiredRows, cashedOutRows] = await Promise.all([
     sequelize.query(issuedSql, { replacements, type: QueryTypes.SELECT }),
     sequelize.query(redeemedSql, { replacements, type: QueryTypes.SELECT }),
     sequelize.query(expiredSql, { replacements, type: QueryTypes.SELECT }),
+    hasTransactions
+      ? sequelize.query(cashedOutSql, { replacements, type: QueryTypes.SELECT })
+      : [],
   ]);
 
   const mapSeries = (rows) =>
@@ -989,9 +1005,20 @@ async function getCashierPerformance(range) {
   const issuedMap = mapSeries(issuedRows);
   const redeemedMap = mapSeries(redeemedRows);
   const expiredMap = mapSeries(expiredRows);
+  const cashedOutMap = new Map(
+    (cashedOutRows || []).map((row) => [formatBucketValue(row.t), Number(row.count || 0)])
+  );
+  const cashedOutAmountMap = new Map(
+    (cashedOutRows || []).map((row) => [formatBucketValue(row.t), Number(row.amount || 0)])
+  );
 
   const allKeys = Array.from(
-    new Set([...issuedMap.keys(), ...redeemedMap.keys(), ...expiredMap.keys()])
+    new Set([
+      ...issuedMap.keys(),
+      ...redeemedMap.keys(),
+      ...expiredMap.keys(),
+      ...cashedOutMap.keys(),
+    ])
   ).sort();
 
   const series = allKeys.map((key) => ({
@@ -999,6 +1026,8 @@ async function getCashierPerformance(range) {
     issued: issuedMap.get(key) || 0,
     redeemed: redeemedMap.get(key) || 0,
     expired: expiredMap.get(key) || 0,
+    cashedOut: cashedOutMap.get(key) || 0,
+    cashedOutAmount: cashedOutAmountMap.get(key) || 0,
   }));
 
   const totals = series.reduce(
@@ -1006,9 +1035,11 @@ async function getCashierPerformance(range) {
       acc.issued += row.issued;
       acc.redeemed += row.redeemed;
       acc.expired += row.expired;
+      acc.cashedOut += row.cashedOut;
+      acc.cashedOutAmount += row.cashedOutAmount;
       return acc;
     },
-    { issued: 0, redeemed: 0, expired: 0 }
+    { issued: 0, redeemed: 0, expired: 0, cashedOut: 0, cashedOutAmount: 0 }
   );
 
   return { series, totals };

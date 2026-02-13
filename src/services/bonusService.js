@@ -1,6 +1,6 @@
 const { Transaction } = require("../models");
 
-const BONUS_TRIGGER_BALANCE = 1.0;
+const BONUS_TRIGGER_BALANCE = 0.5;
 
 function toNumber(value) {
   if (value == null) return 0;

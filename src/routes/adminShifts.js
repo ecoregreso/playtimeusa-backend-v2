@@ -97,7 +97,9 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
     });
 
     cashedOutTx.forEach((tx) => {
-      const staffId = tx.createdByUserId || null;
+      const metadata = tx.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
+      const rawStaffId = metadata.cashoutByStaffId || tx.createdByUserId || null;
+      const staffId = Number(rawStaffId || 0) || null;
       if (!staffId) return;
       const bucket = ensureBucket(staffMap, staffId);
       const amt = Number(tx.amount || 0);
@@ -126,7 +128,37 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
       return acc;
     }, {});
 
-    res.json({ ok: true, data: { start, end, staff: staffMeta, summaries, closures } });
+    const scopedStaffIds = new Set(
+      Array.from(staffMap.keys())
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    );
+    cashiers.forEach((cashier) => {
+      if (cashier?.id) scopedStaffIds.add(Number(cashier.id));
+    });
+
+    if (scopedStaffIds.size) {
+      const staffRows = await StaffUser.findAll({
+        where: {
+          tenantId,
+          id: { [Op.in]: Array.from(scopedStaffIds) },
+        },
+        attributes: ["id", "username", "role"],
+      });
+      staffRows.forEach((s) => {
+        staffMeta[s.id] = { id: s.id, username: s.username, role: s.role };
+      });
+    }
+
+    const summariesWithStaff = summaries.map((row) => ({
+      ...row,
+      staff: staffMeta[row.staffId] || null,
+    }));
+
+    res.json({
+      ok: true,
+      data: { start, end, staff: staffMeta, summaries: summariesWithStaff, closures },
+    });
   } catch (err) {
     console.error("[ADMIN_SHIFTS] summary error:", err);
     res.status(500).json({ ok: false, error: "Failed to load shift summary" });

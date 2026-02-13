@@ -199,6 +199,7 @@ router.get(
         playersNew,
         gameRoundsAgg,
         txByType,
+        voucherCashoutTx,
         recentVouchers,
         recentTransactions,
         recentRounds,
@@ -297,6 +298,17 @@ router.get(
             [fn("SUM", col("amount")), "totalAmount"],
           ],
           group: ["type"],
+        }),
+
+        Transaction.findAll({
+          where: {
+            type: "voucher_debit",
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: ["id", "amount"],
         }),
 
         // Recent vouchers (dashboard)
@@ -401,6 +413,14 @@ router.get(
       }
 
       redeemedStats.uniquePlayers = redeemedStats.uniquePlayers.size;
+
+      const cashoutStats = {
+        count: voucherCashoutTx.length,
+        totalAmount: voucherCashoutTx.reduce(
+          (sum, tx) => sum + Number(tx.amount || 0),
+          0
+        ),
+      };
 
       // Simple "breakage" view = issued - redeemed in amount/bonus
       const breakageStats = {
@@ -537,6 +557,7 @@ router.get(
       const summary = {
         totalVoucherAmount: issuedStats.totalAmount,
         totalVoucherBonus: issuedStats.totalBonus,
+        totalVoucherCashout: cashoutStats.totalAmount,
         totalCredits,
         totalDebits,
         totalBetAmount: txAggregates.gameBetTotal,
@@ -589,6 +610,7 @@ router.get(
         vouchers: {
           issued: issuedStats,
           redeemed: redeemedStats,
+          cashedOut: cashoutStats,
           breakage: breakageStats,
         },
         players: playersStats,
@@ -1049,6 +1071,7 @@ router.get(
         expiredRows,
         deposits,
         withdrawals,
+        cashoutTxRows,
       ] = await Promise.all([
         GameRound.findAll({
           where: {
@@ -1146,6 +1169,22 @@ router.get(
           },
           attributes: ["createdAt", "sentAt", "metadata"],
         }),
+        Transaction.findAll({
+          where: {
+            type: "voucher_debit",
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            [literal(`DATE("createdAt")`), "day"],
+            [fn("COUNT", literal("*")), "count"],
+            [fn("SUM", col("amount")), "amount"],
+          ],
+          group: [literal(`DATE("createdAt")`)],
+          order: [[literal(`DATE("createdAt")`), "ASC"]],
+        }),
       ]);
 
       const pendingMap = {};
@@ -1180,12 +1219,21 @@ router.get(
         const day = row.get("day");
         expiredMap[day] = Number(row.get("count") || 0);
       }
+      const cashoutMap = {};
+      const cashoutAmountMap = {};
+      for (const row of cashoutTxRows) {
+        const day = row.get("day");
+        cashoutMap[day] = Number(row.get("count") || 0);
+        cashoutAmountMap[day] = Number(row.get("amount") || 0);
+      }
 
       const cashierDays = dayList.map((day) => ({
         day,
         issued: issuedMap[day] || 0,
         redeemed: redeemedMap[day] || 0,
         expired: expiredMap[day] || 0,
+        cashedOut: cashoutMap[day] || 0,
+        cashedOutAmount: cashoutAmountMap[day] || 0,
       }));
 
       const staffIds = new Set();
@@ -1248,9 +1296,11 @@ router.get(
               acc.issued += day.issued;
               acc.redeemed += day.redeemed;
               acc.expired += day.expired;
+              acc.cashedOut += day.cashedOut;
+              acc.cashedOutAmount += day.cashedOutAmount;
               return acc;
             },
-            { issued: 0, redeemed: 0, expired: 0 }
+            { issued: 0, redeemed: 0, expired: 0, cashedOut: 0, cashedOutAmount: 0 }
           ),
         },
         resolution: {

@@ -7,7 +7,15 @@ const { sequelize } = require("../db");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { staffAuth } = require("../middleware/staffAuth");
 const { PERMISSIONS, ROLE_DEFAULT_PERMISSIONS } = require("../constants/permissions");
-const { Voucher, Wallet, Transaction, User, TenantVoucherPool, TenantWallet } = require("../models");
+const {
+  Voucher,
+  Wallet,
+  Transaction,
+  User,
+  TenantVoucherPool,
+  TenantWallet,
+  StaffUser,
+} = require("../models");
 const { generateVoucherQrPng } = require("../utils/qr");
 const { getJson } = require("../utils/ownerSettings");
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
@@ -28,6 +36,15 @@ const { getLock, recordFailure, recordSuccess } = require("../utils/lockout");
 const router = express.Router();
 
 const redeemLimiter = buildLimiter({ windowMs: 15 * 60 * 1000, max: 30, message: "Too many voucher redeem attempts" });
+
+function toMoney(value) {
+  return Math.round(Number(value || 0) * 10000) / 10000;
+}
+
+function normalizeStaffId(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
 
 function requireStaffRole(...roles) {
   return (req, res, next) => {
@@ -344,17 +361,71 @@ router.get(
         parseInt(req.query.limit || "200", 10),
         500
       );
+      const tenantId = resolveTenantId(req);
+      const where = tenantId ? { tenantId } : undefined;
 
       const vouchers = await Voucher.findAll({
+        ...(where ? { where } : {}),
         order: [["createdAt", "DESC"]],
         limit,
       });
 
+      const staffIds = new Set();
+      vouchers.forEach((voucher) => {
+        const metadata = voucher.metadata && typeof voucher.metadata === "object"
+          ? voucher.metadata
+          : {};
+        const creatorId = normalizeStaffId(
+          voucher.createdByUserId || metadata.createdByStaffId || metadata.voucherCreatedByStaffId
+        );
+        const cashoutById = normalizeStaffId(
+          metadata.cashoutByStaffId || metadata.terminatedByStaffId
+        );
+        if (creatorId) staffIds.add(creatorId);
+        if (cashoutById) staffIds.add(cashoutById);
+      });
+
+      const staffRows = staffIds.size
+        ? await StaffUser.findAll({
+            where: {
+              id: { [Op.in]: Array.from(staffIds) },
+              ...(tenantId ? { tenantId } : {}),
+            },
+            attributes: ["id", "username", "role"],
+          })
+        : [];
+      const staffMap = new Map(
+        staffRows.map((staff) => [
+          staff.id,
+          { id: staff.id, username: staff.username, role: staff.role },
+        ])
+      );
+
       // Normalize status casing for front-end filters
-      const normalized = vouchers.map((v) => ({
-        ...v.toJSON(),
-        status: String(v.status || "").toLowerCase(),
-      }));
+      const normalized = vouchers.map((voucher) => {
+        const data = voucher.toJSON ? voucher.toJSON() : { ...voucher };
+        const metadata = data.metadata && typeof data.metadata === "object" ? data.metadata : {};
+        const createdByStaffId = normalizeStaffId(
+          data.createdByUserId || metadata.createdByStaffId || metadata.voucherCreatedByStaffId
+        );
+        const cashoutByStaffId = normalizeStaffId(
+          metadata.cashoutByStaffId || metadata.terminatedByStaffId
+        );
+
+        return {
+          ...data,
+          status: String(data.status || "").toLowerCase(),
+          createdByStaffId,
+          createdByStaff: createdByStaffId ? staffMap.get(createdByStaffId) || null : null,
+          cashoutAmount: toMoney(metadata.cashoutAmount || 0),
+          cashoutAt: metadata.cashoutAt || metadata.terminatedAt || null,
+          cashoutByStaffId,
+          cashoutByStaff: cashoutByStaffId ? staffMap.get(cashoutByStaffId) || null : null,
+          cashoutTransactionId: metadata.cashoutTransactionId || null,
+          cashoutBalanceBefore: toMoney(metadata.cashoutBalanceBefore || 0),
+          cashoutBonusPendingVoided: toMoney(metadata.cashoutBonusPendingVoided || 0),
+        };
+      });
 
       return res.json(normalized);
     } catch (err) {
@@ -549,10 +620,12 @@ router.post(
                 maxCashout: valueMaxCashout,
                 currency: currencyCode,
                 status: "new",
-                createdBy: req.staff?.id || null,
                 metadata: {
                   userCode,
                   maxCashout: valueMaxCashout,
+                  createdByStaffId: req.staff?.id || null,
+                  createdByStaffUsername: req.staff?.username || null,
+                  createdByStaffRole: req.staff?.role || null,
                   capStrategy: {
                     mode: capResolution.capMode,
                     percent: capResolution.capPercent,
@@ -851,33 +924,112 @@ router.post(
         return res.status(400).json({ error: "Voucher already terminated" });
       }
 
+      const now = new Date();
+      const voucherMeta =
+        voucher.metadata && typeof voucher.metadata === "object" ? { ...voucher.metadata } : {};
+      const voucherCreatedByStaffId = normalizeStaffId(
+        voucher.createdByUserId || voucherMeta.createdByStaffId || voucherMeta.voucherCreatedByStaffId
+      );
+      const voucherCreatedByStaffUsername = voucherMeta.createdByStaffUsername || null;
+
+      let wallet = null;
+      if (voucher.redeemedByUserId) {
+        wallet = await Wallet.findOne({
+          where: {
+            tenantId,
+            userId: voucher.redeemedByUserId,
+          },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+      }
+
+      const balanceBefore = toMoney(wallet ? wallet.balance : 0);
+      const bonusPendingBefore = toMoney(wallet ? wallet.bonusPending : 0);
+      const bonusUnackedBefore = toMoney(wallet ? wallet.bonusUnacked : 0);
+      const cashoutAmount = Math.max(0, balanceBefore);
+
+      let cashoutTx = null;
+      if (wallet) {
+        const activeVoucherIdBefore = wallet.activeVoucherId || null;
+        wallet.balance = 0;
+        wallet.bonusPending = 0;
+        wallet.bonusUnacked = 0;
+        wallet.activeVoucherId = null;
+        await wallet.save({ transaction: t });
+
+        cashoutTx = await Transaction.create(
+          {
+            tenantId,
+            walletId: wallet.id,
+            type: "voucher_debit",
+            amount: cashoutAmount,
+            balanceBefore,
+            balanceAfter: toMoney(wallet.balance || 0),
+            reference: `voucher:${voucher.code}:cashout`,
+            metadata: {
+              voucherId: voucher.id,
+              code: voucher.code,
+              reason: reason || "cashout",
+              cashoutAmount,
+              cashoutByStaffId: req.staff?.id || null,
+              cashoutByRole: req.staff?.role || null,
+              voucherCreatedByStaffId,
+              voucherCreatedByStaffUsername,
+              bonusPendingBefore,
+              bonusPendingVoided: bonusPendingBefore,
+              bonusUnackedBefore,
+              activeVoucherIdBefore,
+            },
+          },
+          { transaction: t }
+        );
+      }
+
       voucher.status = "terminated";
       voucher.metadata = {
-        ...(voucher.metadata || {}),
-        terminatedAt: new Date().toISOString(),
+        ...voucherMeta,
+        terminatedAt: now.toISOString(),
         terminatedByStaffId: req.staff?.id || null,
         terminatedReason: reason || null,
+        cashoutAt: now.toISOString(),
+        cashoutAmount,
+        cashoutByStaffId: req.staff?.id || null,
+        cashoutByRole: req.staff?.role || null,
+        cashoutPlayerId: voucher.redeemedByUserId || wallet?.userId || null,
+        cashoutWalletId: wallet?.id || null,
+        cashoutBalanceBefore: balanceBefore,
+        cashoutBalanceAfter: toMoney(wallet ? wallet.balance : 0),
+        cashoutBonusPendingBefore: bonusPendingBefore,
+        cashoutBonusPendingVoided: bonusPendingBefore,
+        cashoutBonusUnackedBefore: bonusUnackedBefore,
+        cashoutTransactionId: cashoutTx?.id || null,
+        voucherCreatedByStaffId,
+        voucherCreatedByStaffUsername,
       };
       await voucher.save({ transaction: t });
 
-      const totalCredit =
-        Number(voucher.totalCredit || 0) ||
-        Number(voucher.amount || 0) + Number(voucher.bonusAmount || 0);
-
       await recordLedgerEvent({
-        ts: new Date(),
-        playerId: null,
+        ts: now,
+        playerId: voucher.redeemedByUserId || wallet?.userId || null,
         cashierId: req.staff?.role === "cashier" ? req.staff.id : null,
         agentId: req.staff?.role === "cashier" ? null : req.staff?.id || null,
         eventType: "WITHDRAW",
         actionId: voucher.id,
-        amountCents: toCents(-totalCredit),
+        amountCents: toCents(-cashoutAmount),
         source: "vouchers.terminate",
         meta: {
           ...(buildRequestMeta(req, { staffRole: req.staff?.role || null }) || {}),
           voucherId: voucher.id,
           code: voucher.code,
           reason: reason || "terminated",
+          cashoutAmount,
+          cashoutAmountCents: toCents(cashoutAmount),
+          cashoutTransactionId: cashoutTx?.id || null,
+          bonusPendingVoided: bonusPendingBefore,
+          bonusUnackedBefore,
+          voucherCreatedByStaffId,
+          voucherCreatedByStaffUsername,
         },
       });
 
@@ -895,11 +1047,29 @@ router.post(
         statusCode: 200,
         ip: req.auditContext?.ip || null,
         userAgent: req.auditContext?.userAgent || null,
-        meta: { voucherId: voucher.id, code: voucher.code, reason },
+        meta: {
+          voucherId: voucher.id,
+          code: voucher.code,
+          reason,
+          cashoutAmount,
+          cashoutTransactionId: cashoutTx?.id || null,
+          voucherCreatedByStaffId,
+          voucherCreatedByStaffUsername,
+        },
       });
 
       await t.commit();
-      return res.json({ ok: true, voucher: sanitizeVoucher(voucher) });
+      return res.json({
+        ok: true,
+        voucher: sanitizeVoucher(voucher),
+        cashout: {
+          amount: cashoutAmount,
+          walletBalanceBefore: balanceBefore,
+          walletBalanceAfter: toMoney(wallet ? wallet.balance : 0),
+          bonusPendingVoided: bonusPendingBefore,
+          transactionId: cashoutTx?.id || null,
+        },
+      });
     } catch (err) {
       await t.rollback();
       console.error("[VOUCHERS] POST /terminate error:", err);
