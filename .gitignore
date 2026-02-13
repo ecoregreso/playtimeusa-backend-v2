@@ -16,4 +16,9 @@ exports/
 *.der
 *.bak
 *.bak.*
+*.save
+*.orig
+*.original
+*.original.*
 *.tmp
+staff_pam_bundle*/
