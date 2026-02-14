@@ -10,7 +10,7 @@ const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bo
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { resolveVoucherMaxCashout } = require("../services/voucherOutcomeService");
 const { resolveWalletVoucherPolicyState } = require("../services/voucherWalletStateService");
-const { signAccessToken, signRefreshToken } = require("../utils/jwt");
+const { signAccessToken, signRefreshToken, verifyRefreshToken } = require("../utils/jwt");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { initTenantContext } = require("../middleware/tenantContext");
 const { emitSecurityEvent, maskCode } = require("../lib/security/events");
@@ -49,7 +49,16 @@ async function ensureNotLocked(subjectId, res) {
 }
 
 async function storeRefreshToken(user, refreshToken, req) {
-  const refreshJti = uuidv4();
+  let refreshJti = null;
+  try {
+    const payload = verifyRefreshToken(refreshToken);
+    refreshJti = payload?.jti ? String(payload.jti) : null;
+  } catch {
+    refreshJti = null;
+  }
+  if (!refreshJti) {
+    refreshJti = uuidv4();
+  }
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   await RefreshToken.create({
     id: refreshJti,

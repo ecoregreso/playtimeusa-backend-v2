@@ -312,8 +312,21 @@ router.post('/refresh', async (req, res) => {
 
     const payload = verifyRefreshToken(refreshToken);
 
-    const existing = await RefreshToken.findByPk(payload.jti);
     const hashed = hashToken(refreshToken);
+    let existing = await RefreshToken.findByPk(payload.jti);
+
+    // Backward compatibility for older player login flow that persisted refresh rows
+    // with random IDs instead of refresh token jti.
+    if (!existing) {
+      existing = await RefreshToken.findOne({
+        where: {
+          userId: payload.sub,
+          hashedToken: hashed,
+          revokedAt: { [Op.is]: null },
+        },
+        order: [["createdAt", "DESC"]],
+      });
+    }
 
     if (!existing || existing.revokedAt || existing.hashedToken !== hashed) {
       await revokeAllRefreshTokens(payload.sub, "refresh_reuse_detected");
