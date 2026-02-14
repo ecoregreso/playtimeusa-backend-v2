@@ -5,8 +5,23 @@ const { Voucher, Transaction, StaffUser, ShiftClosure } = require("../models");
 
 const router = express.Router();
 
-function resolveTenantScope(staff = {}) {
-  return staff.role === "owner" ? null : staff.tenantId || null;
+function normalizeTenantId(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  return trimmed || null;
+}
+
+function resolveTenantScope(staff = {}, tenantIdOverride = null) {
+  if (staff.role === "owner") {
+    return normalizeTenantId(tenantIdOverride || staff.tenantId || null);
+  }
+  return staff.tenantId || null;
+}
+
+function normalizeStaffId(value) {
+  const num = Number(value || 0);
+  if (!Number.isInteger(num) || num <= 0) return null;
+  return num;
 }
 
 function startEndFromDate(dateStr) {
@@ -40,9 +55,11 @@ function ensureBucket(map, staffId) {
 router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req, res) => {
   try {
     const staff = req.staff || {};
-    const tenantId = resolveTenantScope(staff);
+    const tenantId = resolveTenantScope(staff, req.query?.tenantId || null);
     if (!tenantId) {
-      return res.status(400).json({ ok: false, error: "Tenant is required for shift summary" });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Tenant is required for shift summary (owners must pass tenantId)." });
     }
 
     const { start, end } = startEndFromDate(req.query.date);
@@ -52,6 +69,11 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
       attributes: ["id", "username", "role"],
     });
     const staffMap = new Map();
+    cashiers.forEach((cashier) => {
+      if (cashier?.id) {
+        ensureBucket(staffMap, Number(cashier.id));
+      }
+    });
 
     const vouchers = await Voucher.findAll({
       where: {
@@ -64,7 +86,7 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
     });
 
     vouchers.forEach((v) => {
-      const creator = v.createdByUserId || v.metadata?.createdByStaffId || null;
+      const creator = normalizeStaffId(v.createdByUserId || v.metadata?.createdByStaffId || null);
       if (creator) {
         const bucket = ensureBucket(staffMap, creator);
         const amt = Number(v.amount || 0);
@@ -78,7 +100,9 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
 
       const redeemedAt = v.redeemedAt || v.redeemed_at;
       if (redeemedAt && new Date(redeemedAt) >= start && new Date(redeemedAt) < end) {
-        const redeemer = v.metadata?.redeemedByStaffId || v.redeemedByUserId || v.redeemedBy || null;
+        const redeemer = normalizeStaffId(
+          v.metadata?.redeemedByStaffId || v.redeemedByUserId || v.redeemedBy || null
+        );
         if (redeemer) {
           const bucket = ensureBucket(staffMap, redeemer);
           const amt = Number(v.amount || 0);
@@ -98,8 +122,7 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
 
     cashedOutTx.forEach((tx) => {
       const metadata = tx.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
-      const rawStaffId = metadata.cashoutByStaffId || tx.createdByUserId || null;
-      const staffId = Number(rawStaffId || 0) || null;
+      const staffId = normalizeStaffId(metadata.cashoutByStaffId || tx.createdByUserId || null);
       if (!staffId) return;
       const bucket = ensureBucket(staffMap, staffId);
       const amt = Number(tx.amount || 0);
@@ -120,7 +143,7 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
         startAt: { [Op.gte]: start },
         endAt: { [Op.lte]: end },
       },
-      order: [["closed_at", "DESC"]],
+      order: [["closedAt", "DESC"]],
     });
 
     const staffMeta = cashiers.reduce((acc, s) => {
@@ -128,11 +151,7 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
       return acc;
     }, {});
 
-    const scopedStaffIds = new Set(
-      Array.from(staffMap.keys())
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0)
-    );
+    const scopedStaffIds = new Set(Array.from(staffMap.keys()).map((id) => Number(id)).filter(Boolean));
     cashiers.forEach((cashier) => {
       if (cashier?.id) scopedStaffIds.add(Number(cashier.id));
     });
@@ -150,10 +169,17 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
       });
     }
 
-    const summariesWithStaff = summaries.map((row) => ({
-      ...row,
-      staff: staffMeta[row.staffId] || null,
-    }));
+    const summariesWithStaff = summaries
+      .map((row) => ({
+        ...row,
+        staff: staffMeta[row.staffId] || null,
+      }))
+      .sort((a, b) => {
+        const aName = String(a.staff?.username || "").toLowerCase();
+        const bName = String(b.staff?.username || "").toLowerCase();
+        if (aName && bName) return aName.localeCompare(bName);
+        return Number(a.staffId || 0) - Number(b.staffId || 0);
+      });
 
     res.json({
       ok: true,
@@ -168,27 +194,30 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
 router.post("/close", requireStaffAuth([PERMISSIONS.FINANCE_WRITE]), async (req, res) => {
   try {
     const staff = req.staff || {};
-    const tenantId = resolveTenantScope(staff);
+    const tenantId = resolveTenantScope(staff, req.body?.tenantId || req.query?.tenantId || null);
     if (!tenantId) {
-      return res.status(400).json({ ok: false, error: "Tenant is required" });
+      return res.status(400).json({ ok: false, error: "Tenant is required (owners must pass tenantId)." });
     }
     const { staffId, startAt, endAt, checklist, notes, expectedBalance, actualBalance, summary } = req.body || {};
-    if (!staffId || !startAt || !endAt) {
+    const normalizedStaffId = normalizeStaffId(staffId);
+    if (!normalizedStaffId || !startAt || !endAt) {
       return res.status(400).json({ ok: false, error: "staffId, startAt, endAt are required" });
     }
 
-    const cashier = await StaffUser.findOne({ where: { id: staffId, tenantId } });
+    const cashier = await StaffUser.findOne({ where: { id: normalizedStaffId, tenantId } });
     if (!cashier) {
       return res.status(404).json({ ok: false, error: "Staff not found for tenant" });
     }
 
     const start = new Date(startAt);
     const end = new Date(endAt);
-    let closure = await ShiftClosure.findOne({ where: { tenantId, staffId, startAt: start, endAt: end } });
+    let closure = await ShiftClosure.findOne({
+      where: { tenantId, staffId: normalizedStaffId, startAt: start, endAt: end },
+    });
     if (!closure) {
       closure = await ShiftClosure.create({
         tenantId,
-        staffId,
+        staffId: normalizedStaffId,
         startAt: start,
         endAt: end,
         checklist: checklist || null,

@@ -15,7 +15,7 @@ const ShiftClosure = sequelize.define(
       field: "tenant_id",
     },
     staffId: {
-      type: DataTypes.UUID,
+      type: DataTypes.INTEGER,
       allowNull: false,
       field: "staff_id",
     },

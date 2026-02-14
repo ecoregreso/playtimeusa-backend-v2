@@ -20,6 +20,13 @@ function tenantConfigKey(tenantId) {
   return `tenant:${tenantId}:config`;
 }
 
+const DEFAULT_THEME_SETTINGS = {
+  mode: "dark",
+  highContrast: false,
+  compactDensity: false,
+  neonAccents: true,
+};
+
 const DEFAULT_SYSTEM_CONFIG = {
   maintenanceMode: false,
   purchaseOrdersEnabled: true,
@@ -30,7 +37,54 @@ const DEFAULT_SYSTEM_CONFIG = {
   pushEnabled: true,
   outcomeMode: DEFAULT_OUTCOME_MODE,
   voucherWinCapPolicy: { ...DEFAULT_VOUCHER_WIN_CAP_POLICY },
+  themeSettings: { ...DEFAULT_THEME_SETTINGS },
 };
+
+const THEME_MODE_OPTIONS = [
+  {
+    value: "light",
+    label: "Light",
+    description: "Bright control-surface theme for daytime operations.",
+  },
+  {
+    value: "dark",
+    label: "Dark",
+    description: "Low-glare dark theme for operations floors and late shifts.",
+  },
+  {
+    value: "auto",
+    label: "Auto (System)",
+    description: "Follow the viewer device theme preference.",
+  },
+];
+
+function normalizeThemeMode(value, fallback = DEFAULT_THEME_SETTINGS.mode) {
+  const mode = String(value || "").toLowerCase();
+  if (mode === "light" || mode === "dark" || mode === "auto") return mode;
+  return fallback;
+}
+
+function normalizeThemeSettings(raw, fallback = DEFAULT_THEME_SETTINGS) {
+  const input = raw && typeof raw === "object" ? raw : {};
+  const base = fallback && typeof fallback === "object" ? fallback : DEFAULT_THEME_SETTINGS;
+  return {
+    mode: normalizeThemeMode(input.mode, base.mode || DEFAULT_THEME_SETTINGS.mode),
+    highContrast: input.highContrast == null ? Boolean(base.highContrast) : Boolean(input.highContrast),
+    compactDensity: input.compactDensity == null ? Boolean(base.compactDensity) : Boolean(input.compactDensity),
+    neonAccents: input.neonAccents == null ? Boolean(base.neonAccents) : Boolean(input.neonAccents),
+  };
+}
+
+function buildThemeOptions(themeSettings) {
+  return {
+    options: THEME_MODE_OPTIONS,
+    toggles: [
+      { key: "highContrast", label: "High Contrast", defaultValue: Boolean(themeSettings?.highContrast) },
+      { key: "compactDensity", label: "Compact Density", defaultValue: Boolean(themeSettings?.compactDensity) },
+      { key: "neonAccents", label: "Neon Accent Pack", defaultValue: Boolean(themeSettings?.neonAccents) },
+    ],
+  };
+}
 
 function normalizeTenantId(value) {
   if (!value) return null;
@@ -62,6 +116,7 @@ async function getSystemConfig() {
   const merged = { ...DEFAULT_SYSTEM_CONFIG, ...cfg };
   merged.outcomeMode = normalizeOutcomeMode(merged.outcomeMode, DEFAULT_OUTCOME_MODE);
   merged.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(merged.voucherWinCapPolicy);
+  merged.themeSettings = normalizeThemeSettings(merged.themeSettings, DEFAULT_THEME_SETTINGS);
   return merged;
 }
 
@@ -82,9 +137,16 @@ router.get("/", staffAuth, async (req, res) => {
         tenantNormalized.voucherWinCapPolicy
       );
     }
+    if (Object.prototype.hasOwnProperty.call(tenantNormalized, "themeSettings")) {
+      tenantNormalized.themeSettings = normalizeThemeSettings(
+        tenantNormalized.themeSettings,
+        system.themeSettings
+      );
+    }
     const effective = { ...system, ...tenantNormalized };
     effective.outcomeMode = normalizeOutcomeMode(effective.outcomeMode, system.outcomeMode);
     effective.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(effective.voucherWinCapPolicy);
+    effective.themeSettings = normalizeThemeSettings(effective.themeSettings, system.themeSettings);
     return res.json({ ok: true, tenantId, system, tenant: tenantNormalized, effective });
   } catch (err) {
     console.error("[CONFIG] load error:", err);
@@ -131,6 +193,29 @@ router.get("/outcome-mode/options", staffAuth, async (req, res) => {
   } catch (err) {
     console.error("[CONFIG] outcome mode options error:", err);
     return res.status(500).json({ ok: false, error: "Failed to load outcome mode options" });
+  }
+});
+
+router.get("/theme/options", staffAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const system = await getSystemConfig();
+    const tenant = tenantId ? await getJson(tenantConfigKey(tenantId), {}) : {};
+    const effective = { ...system, ...(tenant || {}) };
+    const themeSettings = normalizeThemeSettings(
+      effective?.themeSettings,
+      system.themeSettings || DEFAULT_THEME_SETTINGS
+    );
+
+    return res.json({
+      ok: true,
+      tenantId,
+      themeSettings,
+      ...buildThemeOptions(themeSettings),
+    });
+  } catch (err) {
+    console.error("[CONFIG] theme options error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to load theme settings" });
   }
 });
 
@@ -181,6 +266,61 @@ router.put("/outcome-mode", staffAuth, requireVoucherPolicyWriteRole, async (req
     return res.status(500).json({ ok: false, error: "Failed to save outcome mode" });
   }
 });
+
+async function upsertThemeSettings(req, res) {
+  try {
+    const tenantId = resolveTenantId(req);
+    if (!tenantId && req.staff?.role !== "owner") {
+      return res.status(400).json({ ok: false, error: "Tenant ID is required" });
+    }
+    if (!tenantId && req.staff?.role === "owner") {
+      return res.status(400).json({ ok: false, error: "Owner must specify tenantId" });
+    }
+
+    const incoming =
+      req.body?.themeSettings ||
+      req.body?.theme ||
+      req.body?.settings;
+    if (!incoming || typeof incoming !== "object") {
+      return res.status(400).json({ ok: false, error: "themeSettings must be an object" });
+    }
+
+    const current = await getJson(tenantConfigKey(tenantId), {});
+    const currentThemeSettings = normalizeThemeSettings(
+      current?.themeSettings,
+      DEFAULT_THEME_SETTINGS
+    );
+    const nextThemeSettings = normalizeThemeSettings(incoming, currentThemeSettings);
+    const merged = { ...(current || {}), themeSettings: nextThemeSettings };
+    await setJson(tenantConfigKey(tenantId), merged);
+
+    const system = await getSystemConfig();
+    const effective = {
+      ...system,
+      ...merged,
+      outcomeMode: normalizeOutcomeMode(merged.outcomeMode, system.outcomeMode),
+      voucherWinCapPolicy: normalizeVoucherWinCapPolicy(
+        merged.voucherWinCapPolicy || system.voucherWinCapPolicy
+      ),
+      themeSettings: normalizeThemeSettings(merged.themeSettings, system.themeSettings),
+    };
+
+    return res.json({
+      ok: true,
+      tenantId,
+      themeSettings: effective.themeSettings,
+      tenant: merged,
+      effective,
+      ...buildThemeOptions(effective.themeSettings),
+    });
+  } catch (err) {
+    console.error("[CONFIG] theme settings update error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to save theme settings" });
+  }
+}
+
+router.put("/theme", staffAuth, requireVoucherPolicyWriteRole, upsertThemeSettings);
+router.put("/theme-settings", staffAuth, requireVoucherPolicyWriteRole, upsertThemeSettings);
 
 router.put("/voucher-win-cap/policy", staffAuth, requireVoucherPolicyWriteRole, async (req, res) => {
   try {

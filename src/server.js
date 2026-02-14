@@ -290,6 +290,7 @@ app.get("/api/v1/health", (req, res) => {
 // Backward-compatible mounts (no prefix)
 app.use("/public", publicBrandRoutes);
 app.use("/auth", authRoutes);
+app.use("/wallet", walletRoutes);
 app.use("/wallets", walletRoutes);
 app.use("/vouchers", voucherRoutes);
 app.use("/admin/players", adminPlayersRoutes);
@@ -310,6 +311,7 @@ app.use("/withdrawals", financeRoutes);
 // Preferred v1 API mounts
 app.use("/api/v1/public", publicBrandRoutes);
 app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/wallet", walletRoutes);
 app.use("/api/v1/wallets", walletRoutes);
 app.use("/api/v1/vouchers", voucherRoutes);
 app.use("/api/v1/admin/players", adminPlayersRoutes);

@@ -92,7 +92,7 @@ async function resolveActiveVoucher({ wallet, userId, tenantId, transaction }) {
     where: {
       tenantId: tenantId || null,
       redeemedByUserId: userId,
-      status: { [Op.in]: ["redeemed", "REDEEMED"] },
+      status: { [Op.in]: ["redeemed", "REDEEMED", "used", "USED"] },
     },
     order: [
       ["redeemedAt", "DESC"],
@@ -125,13 +125,25 @@ router.post(
       const { gameId } = req.params;
       const {
         betAmount,
+        amount: amountMajor,
+        wager,
+        wagerMajor,
+        wagerMinor,
+        betAmountMinor,
         roundIndex,
         currency = 'FUN',
         result,
         metadata,
-      } = req.body;
+      } = req.body || {};
 
-      const amount = parseFloat(betAmount);
+      const amount = parseFloat(
+        betAmount ??
+        amountMajor ??
+        wager ??
+        wagerMajor ??
+        (Number.isFinite(Number(wagerMinor)) ? Number(wagerMinor) / 100 : undefined) ??
+        (Number.isFinite(Number(betAmountMinor)) ? Number(betAmountMinor) / 100 : undefined)
+      );
       if (!amount || amount <= 0) {
         await t.rollback();
         return res.status(400).json({ error: 'betAmount must be > 0' });
@@ -413,7 +425,17 @@ router.post(
     const t = await sequelize.transaction({ transaction: req.transaction });
     try {
       const { gameId } = req.params;
-      const { roundId, winAmount, result, metadata } = req.body;
+      const {
+        roundId,
+        winAmount,
+        amount: winAmountMajor,
+        win: winAmountAlt,
+        payout,
+        winMinor,
+        payoutMinor,
+        result,
+        metadata,
+      } = req.body || {};
 
       const round = await GameRound.findOne({
         where: { id: roundId, gameId },
@@ -437,7 +459,15 @@ router.post(
         return res.status(400).json({ error: 'Round already settled' });
       }
 
-      const requestedWin = parseFloat(winAmount || 0);
+      const requestedWin = parseFloat(
+        winAmount ??
+        winAmountMajor ??
+        winAmountAlt ??
+        payout ??
+        (Number.isFinite(Number(winMinor)) ? Number(winMinor) / 100 : undefined) ??
+        (Number.isFinite(Number(payoutMinor)) ? Number(payoutMinor) / 100 : undefined) ??
+        0
+      );
       if (Number.isNaN(requestedWin) || requestedWin < 0) {
         await t.rollback();
         return res.status(400).json({ error: 'winAmount must be >= 0' });
