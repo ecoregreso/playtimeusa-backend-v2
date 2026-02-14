@@ -29,6 +29,10 @@ const {
   resolveVoucherWinCapSelection,
   computeMaxCashoutFromPercent,
 } = require("../services/voucherWinCapPolicyService");
+const {
+  DEFAULT_OUTCOME_MODE,
+  normalizeOutcomeMode,
+} = require("../services/outcomeModeService");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 const { logEvent } = require("../services/auditService");
 const { emitSecurityEvent, maskCode } = require("../lib/security/events");
@@ -87,6 +91,7 @@ const DEFAULT_SYSTEM_CONFIG = {
   withdrawalsEnabled: true,
   messagingEnabled: true,
   pushEnabled: true,
+  outcomeMode: DEFAULT_OUTCOME_MODE,
   voucherWinCapPolicy: { ...DEFAULT_VOUCHER_WIN_CAP_POLICY },
 };
 
@@ -94,6 +99,10 @@ async function getEffectiveConfig(tenantId) {
   const system = await getJson(SYSTEM_CONFIG_KEY, DEFAULT_SYSTEM_CONFIG);
   if (!tenantId) {
     const effectiveNoTenant = { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}) };
+    effectiveNoTenant.outcomeMode = normalizeOutcomeMode(
+      effectiveNoTenant.outcomeMode,
+      DEFAULT_OUTCOME_MODE
+    );
     effectiveNoTenant.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(
       effectiveNoTenant.voucherWinCapPolicy
     );
@@ -101,6 +110,7 @@ async function getEffectiveConfig(tenantId) {
   }
   const tenant = await getJson(tenantConfigKey(tenantId), {});
   const effective = { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}), ...(tenant || {}) };
+  effective.outcomeMode = normalizeOutcomeMode(effective.outcomeMode, DEFAULT_OUTCOME_MODE);
   effective.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(
     effective.voucherWinCapPolicy
   );

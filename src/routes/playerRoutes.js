@@ -291,6 +291,26 @@ router.post("/login", playerLoginLimiter, async (req, res) => {
           .json({ ok: false, error: "Voucher not found or invalid pin" });
       }
 
+      if (!user.isActive) {
+        emitSecurityEvent({
+          tenantId,
+          actorType: "player",
+          actorId: user.id || null,
+          ip: req.auditContext?.ip || null,
+          userAgent: req.auditContext?.userAgent || null,
+          method: req.method,
+          path: req.originalUrl,
+          requestId: req.requestId,
+          eventType: "player_login_failed",
+          severity: 2,
+          details: {
+            maskedCode: maskCode(code, 2),
+            reason: "player_deactivated",
+          },
+        });
+        return res.status(403).json({ ok: false, error: "Account disabled" });
+      }
+
       const validPin = await bcrypt.compare(pin, user.passwordHash || "");
       if (!validPin) {
         await recordFailure({ subjectType: "voucher_login", subjectId: code, ip: req.auditContext?.ip, userAgent: req.auditContext?.userAgent });
@@ -390,6 +410,12 @@ router.post("/login", playerLoginLimiter, async (req, res) => {
         },
         transaction: t,
       });
+
+      if (!user.isActive) {
+        const err = new Error("Account disabled");
+        err.status = 403;
+        throw err;
+      }
 
       const wallet = await getOrCreateWallet(user.id, tenantId, t);
       const amount = Number(voucher.amount || 0);

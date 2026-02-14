@@ -25,6 +25,10 @@ const {
   DEFAULT_VOUCHER_WIN_CAP_POLICY,
   normalizeVoucherWinCapPolicy,
 } = require("../services/voucherWinCapPolicyService");
+const {
+  DEFAULT_OUTCOME_MODE,
+  normalizeOutcomeMode,
+} = require("../services/outcomeModeService");
 const { wipeAllData, wipeTenantData } = require("../services/wipeService");
 const { emitSecurityEvent } = require("../lib/security/events");
 const { writeAuditLog } = require("../lib/security/audit");
@@ -167,6 +171,7 @@ const DEFAULT_SYSTEM_CONFIG = {
   withdrawalsEnabled: true,
   messagingEnabled: true,
   pushEnabled: true,
+  outcomeMode: DEFAULT_OUTCOME_MODE,
   voucherWinCapPolicy: { ...DEFAULT_VOUCHER_WIN_CAP_POLICY },
 };
 
@@ -174,6 +179,7 @@ async function getSystemConfig() {
   const cfg = await getJson(SYSTEM_CONFIG_KEY, null);
   if (!cfg || typeof cfg !== "object") return { ...DEFAULT_SYSTEM_CONFIG };
   const merged = { ...DEFAULT_SYSTEM_CONFIG, ...cfg };
+  merged.outcomeMode = normalizeOutcomeMode(merged.outcomeMode, DEFAULT_OUTCOME_MODE);
   merged.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(merged.voucherWinCapPolicy);
   return merged;
 }
@@ -298,6 +304,9 @@ async function handleSetSystemConfig(req, res) {
     }
     const current = await getSystemConfig();
     const merged = { ...current, ...patch };
+    if (Object.prototype.hasOwnProperty.call(patch, "outcomeMode")) {
+      merged.outcomeMode = normalizeOutcomeMode(patch.outcomeMode, current.outcomeMode);
+    }
     if (Object.prototype.hasOwnProperty.call(patch, "voucherWinCapPolicy")) {
       merged.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(patch.voucherWinCapPolicy);
     }
@@ -559,9 +568,18 @@ async function handleGetTenantConfig(req, res) {
   try {
     const tenantId = String(req.params.tenantId || req.params.id || "").trim();
     const system = await getSystemConfig();
-    const tenantCfg = await getJson(tenantConfigKey(tenantId), {});
-    const effective = { ...system, ...(tenantCfg || {}) };
-    res.json({ ok: true, system, tenant: tenantCfg || {}, effective });
+    const tenantCfgRaw = await getJson(tenantConfigKey(tenantId), {});
+    const tenantCfg = { ...(tenantCfgRaw || {}) };
+    if (Object.prototype.hasOwnProperty.call(tenantCfg, "outcomeMode")) {
+      tenantCfg.outcomeMode = normalizeOutcomeMode(tenantCfg.outcomeMode, system.outcomeMode);
+    }
+    if (Object.prototype.hasOwnProperty.call(tenantCfg, "voucherWinCapPolicy")) {
+      tenantCfg.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(tenantCfg.voucherWinCapPolicy);
+    }
+    const effective = { ...system, ...tenantCfg };
+    effective.outcomeMode = normalizeOutcomeMode(effective.outcomeMode, system.outcomeMode);
+    effective.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(effective.voucherWinCapPolicy);
+    res.json({ ok: true, system, tenant: tenantCfg, effective });
   } catch (err) {
     console.error("[OWNER] tenant config get error:", err);
     res.status(500).json({ ok: false, error: "Failed to load tenant config" });
@@ -577,12 +595,23 @@ async function handleSetTenantConfig(req, res) {
     }
     const current = await getJson(tenantConfigKey(tenantId), {});
     const merged = { ...(current || {}), ...patch };
+    if (Object.prototype.hasOwnProperty.call(patch, "outcomeMode")) {
+      merged.outcomeMode = normalizeOutcomeMode(
+        patch.outcomeMode,
+        normalizeOutcomeMode(current?.outcomeMode, DEFAULT_OUTCOME_MODE)
+      );
+    }
     if (Object.prototype.hasOwnProperty.call(patch, "voucherWinCapPolicy")) {
       merged.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(patch.voucherWinCapPolicy);
     }
     await setJson(tenantConfigKey(tenantId), merged);
     const system = await getSystemConfig();
-    const effective = { ...system, ...merged };
+    const effective = {
+      ...system,
+      ...merged,
+      outcomeMode: normalizeOutcomeMode(merged.outcomeMode, system.outcomeMode),
+    };
+    effective.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(effective.voucherWinCapPolicy);
     res.json({ ok: true, tenant: merged, system, effective });
   } catch (err) {
     console.error("[OWNER] tenant config set error:", err);

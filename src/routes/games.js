@@ -6,16 +6,34 @@ const { Wallet, Transaction, GameRound, Session, PlayerSafetyAction, Voucher } =
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildRequestMeta, recordLedgerEvent, toCents } = require("../services/ledgerService");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
+const { getJson } = require("../utils/ownerSettings");
 const {
   resolveVoucherMaxCashout,
   readVoucherPolicy,
   computeVoucherDrivenPayout,
   buildVoucherPolicyMetadata,
 } = require("../services/voucherOutcomeService");
+const {
+  DEFAULT_OUTCOME_MODE,
+  normalizeOutcomeMode,
+  isVoucherControlledOutcomeMode,
+} = require("../services/outcomeModeService");
 const safetyEngine = require("../services/playerSafetyEngine");
 const jackpotService = require("../services/jackpotService");
 
 const router = express.Router();
+const SYSTEM_CONFIG_KEY = "system_config";
+
+function tenantConfigKey(tenantId) {
+  return `tenant:${tenantId}:config`;
+}
+
+async function resolveOutcomeMode(tenantId) {
+  const system = await getJson(SYSTEM_CONFIG_KEY, {});
+  const tenant = tenantId ? await getJson(tenantConfigKey(tenantId), {}) : {};
+  const merged = { ...(system || {}), ...(tenant || {}) };
+  return normalizeOutcomeMode(merged?.outcomeMode, DEFAULT_OUTCOME_MODE);
+}
 
 function toMoney(value) {
   return Math.round(Number(value || 0) * 10000) / 10000;
@@ -175,8 +193,12 @@ router.post(
         });
       }
 
-      const maxCashout = resolveVoucherMaxCashout(activeVoucher);
-      if (!(maxCashout > 0)) {
+      const outcomeMode = await resolveOutcomeMode(req.auth?.tenantId || null);
+      const outcomesControlledByVoucher = isVoucherControlledOutcomeMode(outcomeMode);
+      const resolvedMaxCashout = resolveVoucherMaxCashout(activeVoucher);
+      const maxCashout = resolvedMaxCashout > 0 ? resolvedMaxCashout : null;
+
+      if (outcomesControlledByVoucher && !(maxCashout > 0)) {
         await t.rollback();
         return res.status(400).json({
           ok: false,
@@ -184,7 +206,9 @@ router.post(
           message: "Voucher max cashout is not configured.",
         });
       }
-      const policySnapshot = readVoucherPolicy(activeVoucher);
+      const policySnapshot = outcomesControlledByVoucher
+        ? readVoucherPolicy(activeVoucher)
+        : null;
 
       const balanceBefore = parseFloat(wallet.balance || 0);
       if (balanceBefore < amount) {
@@ -193,55 +217,63 @@ router.post(
       }
 
       const balanceAfter = balanceBefore - amount;
-      const trackedBeforeBet = toMoney(
-        Math.max(
-          0,
-          Number(
-            policySnapshot.hasTrackedBalance
-              ? policySnapshot.trackedBalance
-              : Math.min(maxCashout, balanceBefore)
+      let trackedBeforeBet = null;
+      let trackedAfterBet = null;
+      if (outcomesControlledByVoucher) {
+        trackedBeforeBet = toMoney(
+          Math.max(
+            0,
+            Number(
+              policySnapshot.hasTrackedBalance
+                ? policySnapshot.trackedBalance
+                : Math.min(maxCashout, balanceBefore)
+            )
           )
-        )
-      );
-      const trackedAfterBet = toMoney(Math.max(0, trackedBeforeBet - amount));
+        );
+        trackedAfterBet = toMoney(Math.max(0, trackedBeforeBet - amount));
+      }
       wallet.balance = balanceAfter;
       await wallet.save({ transaction: t });
 
-      const priorVoucherPolicy =
-        activeVoucher.metadata &&
-        activeVoucher.metadata.voucherPolicy &&
-        typeof activeVoucher.metadata.voucherPolicy === "object"
-          ? activeVoucher.metadata.voucherPolicy
-          : {};
-      activeVoucher.maxCashout = maxCashout;
-      activeVoucher.metadata = {
-        ...(activeVoucher.metadata || {}),
-        maxCashout,
-        voucherPolicy: {
-          ...priorVoucherPolicy,
+      if (outcomesControlledByVoucher) {
+        const priorVoucherPolicy =
+          activeVoucher.metadata &&
+          activeVoucher.metadata.voucherPolicy &&
+          typeof activeVoucher.metadata.voucherPolicy === "object"
+            ? activeVoucher.metadata.voucherPolicy
+            : {};
+        activeVoucher.maxCashout = maxCashout;
+        activeVoucher.metadata = {
+          ...(activeVoucher.metadata || {}),
           maxCashout,
-          trackedBalance: trackedAfterBet,
-          lastBalance: trackedAfterBet,
-          decayRate: Number(priorVoucherPolicy.decayRate || policySnapshot.decayRate),
-          minDecayAmount: Number(
-            priorVoucherPolicy.minDecayAmount || policySnapshot.minDecayAmount
-          ),
-          stakeDecayMultiplier: Number(
-            priorVoucherPolicy.stakeDecayMultiplier || policySnapshot.stakeDecayMultiplier
-          ),
-        },
-      };
-      await activeVoucher.save({ transaction: t });
+          voucherPolicy: {
+            ...priorVoucherPolicy,
+            maxCashout,
+            trackedBalance: trackedAfterBet,
+            lastBalance: trackedAfterBet,
+            decayRate: Number(priorVoucherPolicy.decayRate || policySnapshot.decayRate),
+            minDecayAmount: Number(
+              priorVoucherPolicy.minDecayAmount || policySnapshot.minDecayAmount
+            ),
+            stakeDecayMultiplier: Number(
+              priorVoucherPolicy.stakeDecayMultiplier || policySnapshot.stakeDecayMultiplier
+            ),
+          },
+        };
+        await activeVoucher.save({ transaction: t });
+      }
 
       const txMetadata = {
         gameId,
         roundIndex: roundIndex ?? null,
         voucherId: activeVoucher.id,
-        maxCashout,
-        voucherTrackedBeforeBet: trackedBeforeBet,
-        voucherTrackedAfterBet: trackedAfterBet,
+        outcomeMode,
+        outcomesControlledByVoucher,
         ...(metadata || {}),
       };
+      if (maxCashout != null) txMetadata.maxCashout = maxCashout;
+      if (trackedBeforeBet != null) txMetadata.voucherTrackedBeforeBet = trackedBeforeBet;
+      if (trackedAfterBet != null) txMetadata.voucherTrackedAfterBet = trackedAfterBet;
       if (sessionId) txMetadata.sessionId = sessionId;
 
       const betTx = await Transaction.create(
@@ -261,12 +293,14 @@ router.post(
 
       const roundMetadata = {
         voucherId: activeVoucher.id,
-        maxCashout,
+        outcomeMode,
+        outcomesControlledByVoucher,
         balanceBeforeBet: balanceBefore,
         balanceAfterBet: balanceAfter,
-        voucherTrackedBeforeBet: trackedBeforeBet,
-        voucherTrackedAfterBet: trackedAfterBet,
-        voucherPolicy: readVoucherPolicy(activeVoucher),
+        ...(maxCashout != null ? { maxCashout } : {}),
+        ...(trackedBeforeBet != null ? { voucherTrackedBeforeBet: trackedBeforeBet } : {}),
+        ...(trackedAfterBet != null ? { voucherTrackedAfterBet: trackedAfterBet } : {}),
+        voucherPolicy: outcomesControlledByVoucher ? readVoucherPolicy(activeVoucher) : null,
         ...(metadata || {}),
       };
       if (sessionId) roundMetadata.sessionId = sessionId;
@@ -348,6 +382,8 @@ router.post(
         jackpotWins,
         voucherPolicy: {
           voucherId: activeVoucher.id,
+          outcomeMode,
+          outcomesControlledByVoucher,
           maxCashout,
           trackedBeforeBet,
           trackedAfterBet,
@@ -434,11 +470,14 @@ router.post(
         });
       }
 
-      const maxCashout = resolveVoucherMaxCashout(
+      const outcomeMode = await resolveOutcomeMode(tenantId);
+      const outcomesControlledByVoucher = isVoucherControlledOutcomeMode(outcomeMode);
+      const resolvedMaxCashout = resolveVoucherMaxCashout(
         activeVoucher,
         Number(roundMetadata.maxCashout || 0)
       );
-      if (!(maxCashout > 0)) {
+      const maxCashout = resolvedMaxCashout > 0 ? resolvedMaxCashout : null;
+      if (outcomesControlledByVoucher && !(maxCashout > 0)) {
         await t.rollback();
         return res.status(400).json({
           ok: false,
@@ -446,53 +485,75 @@ router.post(
           message: "Voucher max cashout is not configured.",
         });
       }
-      const policySnapshot = readVoucherPolicy(activeVoucher);
+      const policySnapshot = outcomesControlledByVoucher
+        ? readVoucherPolicy(activeVoucher)
+        : null;
 
       const stakeAmount = Number(round.betAmount || 0);
       const balanceBeforeSettle = toMoney(wallet.balance || 0);
-      const fallbackTrackedBefore = toMoney(
-        Math.max(
-          0,
-          Number(
-            roundMetadata.balanceBeforeBet ||
-              Math.min(maxCashout, balanceBeforeSettle + stakeAmount)
+      let inferredBeforeBet = null;
+      let inferredAfterBet = null;
+      let payoutOutcome;
+
+      if (outcomesControlledByVoucher) {
+        const fallbackTrackedBefore = toMoney(
+          Math.max(
+            0,
+            Number(
+              roundMetadata.balanceBeforeBet ||
+                Math.min(maxCashout, balanceBeforeSettle + stakeAmount)
+            )
           )
-        )
-      );
-      const fallbackTrackedAfter = toMoney(
-        Math.max(
-          0,
-          Number(roundMetadata.balanceAfterBet || fallbackTrackedBefore - stakeAmount)
-        )
-      );
-      const inferredBeforeBet = toMoney(
-        Math.max(
-          0,
-          Number(
-            roundMetadata.voucherTrackedBeforeBet ||
-              (policySnapshot.hasTrackedBalance
-                ? policySnapshot.trackedBalance + stakeAmount
-                : fallbackTrackedBefore)
+        );
+        const fallbackTrackedAfter = toMoney(
+          Math.max(
+            0,
+            Number(roundMetadata.balanceAfterBet || fallbackTrackedBefore - stakeAmount)
           )
-        )
-      );
-      const inferredAfterBet = toMoney(
-        Math.max(
-          0,
-          Number(
-            roundMetadata.voucherTrackedAfterBet ||
-              (policySnapshot.hasTrackedBalance ? policySnapshot.trackedBalance : fallbackTrackedAfter)
+        );
+        inferredBeforeBet = toMoney(
+          Math.max(
+            0,
+            Number(
+              roundMetadata.voucherTrackedBeforeBet ||
+                (policySnapshot.hasTrackedBalance
+                  ? policySnapshot.trackedBalance + stakeAmount
+                  : fallbackTrackedBefore)
+            )
           )
-        )
-      );
-      const payoutOutcome = computeVoucherDrivenPayout({
-        stakeAmount,
-        balanceBeforeBet: inferredBeforeBet,
-        balanceAfterBet: inferredAfterBet,
-        requestedWinAmount: requestedWin,
-        maxCashout,
-        policy: policySnapshot,
-      });
+        );
+        inferredAfterBet = toMoney(
+          Math.max(
+            0,
+            Number(
+              roundMetadata.voucherTrackedAfterBet ||
+                (policySnapshot.hasTrackedBalance
+                  ? policySnapshot.trackedBalance
+                  : fallbackTrackedAfter)
+            )
+          )
+        );
+        payoutOutcome = computeVoucherDrivenPayout({
+          stakeAmount,
+          balanceBeforeBet: inferredBeforeBet,
+          balanceAfterBet: inferredAfterBet,
+          requestedWinAmount: requestedWin,
+          maxCashout,
+          policy: policySnapshot,
+        });
+      } else {
+        const pureRngWin = toMoney(Math.max(0, requestedWin));
+        payoutOutcome = {
+          payoutAmount: pureRngWin,
+          balanceAfterSettle: toMoney(balanceBeforeSettle + pureRngWin),
+          mode: "pure_rng",
+          progress: null,
+          reachedOrExceededCap: false,
+          decayStep: 0,
+          targetBalanceAfterSettle: toMoney(balanceBeforeSettle + pureRngWin),
+          capApplied: false,
+        };
+      }
 
       const win = toMoney(payoutOutcome.payoutAmount || 0);
       let balanceAfter = toMoney(balanceBeforeSettle + win);
@@ -507,6 +568,8 @@ router.post(
           gameId,
           roundId: round.id,
           voucherId: activeVoucher.id,
+          outcomeMode,
+          outcomesControlledByVoucher,
           maxCashout,
           payoutMode: payoutOutcome.mode,
           requestedWinAmount: requestedWin,
@@ -543,6 +606,8 @@ router.post(
         ...(result && typeof result !== "object" ? { providerResult: result } : {}),
         voucherPolicy: {
           voucherId: activeVoucher.id,
+          outcomeMode,
+          outcomesControlledByVoucher,
           mode: payoutOutcome.mode,
           maxCashout,
           capApplied: Boolean(payoutOutcome.capApplied),
@@ -550,7 +615,9 @@ router.post(
           requestedWinAmount: requestedWin,
           computedWinAmount: win,
           decayStep: Number(payoutOutcome.decayStep || 0),
-          trackedBalanceAfterSettle: Number(payoutOutcome.balanceAfterSettle || 0),
+          trackedBalanceAfterSettle: outcomesControlledByVoucher
+            ? Number(payoutOutcome.balanceAfterSettle || 0)
+            : null,
           jackpotExcludedFromCap: true,
         },
       };
@@ -561,6 +628,8 @@ router.post(
         ...(metadata || {}),
         ...(sessionId ? { sessionId } : {}),
         voucherId: activeVoucher.id,
+        outcomeMode,
+        outcomesControlledByVoucher,
         maxCashout,
         voucherOutcome: {
           mode: payoutOutcome.mode,
@@ -568,8 +637,10 @@ router.post(
           computedWinAmount: win,
           balanceBeforeSettle,
           balanceAfterSettle: balanceAfter,
-          trackedBalanceBeforeSettle: inferredAfterBet,
-          trackedBalanceAfterSettle: Number(payoutOutcome.balanceAfterSettle || 0),
+          trackedBalanceBeforeSettle: outcomesControlledByVoucher ? inferredAfterBet : null,
+          trackedBalanceAfterSettle: outcomesControlledByVoucher
+            ? Number(payoutOutcome.balanceAfterSettle || 0)
+            : null,
           reachedOrExceededCap: Boolean(payoutOutcome.reachedOrExceededCap),
           jackpotExcludedFromCap: true,
         },
@@ -580,18 +651,20 @@ router.post(
         round.rtpSample = win / bet;
       }
 
-      activeVoucher.maxCashout = maxCashout;
-      const updatedMetadata = buildVoucherPolicyMetadata(activeVoucher, {
-        maxCashout,
-        payoutOutcome,
-        balanceAfterSettle: payoutOutcome.balanceAfterSettle,
-      });
-      updatedMetadata.voucherPolicy = {
-        ...(updatedMetadata.voucherPolicy || {}),
-        lastWalletBalance: balanceAfter,
-      };
-      activeVoucher.metadata = updatedMetadata;
-      await activeVoucher.save({ transaction: t });
+      if (outcomesControlledByVoucher && maxCashout > 0) {
+        activeVoucher.maxCashout = maxCashout;
+        const updatedMetadata = buildVoucherPolicyMetadata(activeVoucher, {
+          maxCashout,
+          payoutOutcome,
+          balanceAfterSettle: payoutOutcome.balanceAfterSettle,
+        });
+        updatedMetadata.voucherPolicy = {
+          ...(updatedMetadata.voucherPolicy || {}),
+          lastWalletBalance: balanceAfter,
+        };
+        activeVoucher.metadata = updatedMetadata;
+        await activeVoucher.save({ transaction: t });
+      }
 
       await round.save({ transaction: t });
 

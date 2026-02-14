@@ -1,8 +1,20 @@
 const { Op } = require("sequelize");
+const { getJson } = require("../utils/ownerSettings");
 const {
   resolveVoucherMaxCashout,
   readVoucherPolicy,
 } = require("./voucherOutcomeService");
+const {
+  DEFAULT_OUTCOME_MODE,
+  normalizeOutcomeMode,
+  isVoucherControlledOutcomeMode,
+} = require("./outcomeModeService");
+
+const SYSTEM_CONFIG_KEY = "system_config";
+
+function tenantConfigKey(tenantId) {
+  return `tenant:${tenantId}:config`;
+}
 
 function toNumber(value, fallback = 0) {
   const n = Number(value);
@@ -13,9 +25,15 @@ function toMoney(value) {
   return Math.round(toNumber(value, 0) * 10000) / 10000;
 }
 
-function buildVoucherPolicyState({ voucher, walletBalance = 0 }) {
+function buildVoucherPolicyState({
+  voucher,
+  walletBalance = 0,
+  outcomeMode = DEFAULT_OUTCOME_MODE,
+}) {
   if (!voucher) return null;
 
+  const normalizedOutcomeMode = normalizeOutcomeMode(outcomeMode, DEFAULT_OUTCOME_MODE);
+  const outcomesControlledByVoucher = isVoucherControlledOutcomeMode(normalizedOutcomeMode);
   const maxCashout = resolveVoucherMaxCashout(
     voucher,
     toNumber(voucher?.amount, 0) + toNumber(voucher?.bonusAmount, 0)
@@ -39,22 +57,34 @@ function buildVoucherPolicyState({ voucher, walletBalance = 0 }) {
     status: voucher.status,
     redeemedAt: voucher.redeemedAt || null,
     expiresAt: voucher.expiresAt || null,
-    maxCashout: toMoney(maxCashout),
-    trackedBalance,
-    remainingBeforeCap,
-    capProgress: toMoney(capProgress),
-    decayMode: Boolean(policySnapshot.decayMode),
-    capReachedAt: policySnapshot.capReachedAt || null,
-    decayRounds: Number(policySnapshot.decayRounds || 0),
+    outcomeMode: normalizedOutcomeMode,
+    outcomesControlledByVoucher,
+    maxCashout: outcomesControlledByVoucher ? toMoney(maxCashout) : null,
+    trackedBalance: outcomesControlledByVoucher ? trackedBalance : null,
+    remainingBeforeCap: outcomesControlledByVoucher ? remainingBeforeCap : null,
+    capProgress: outcomesControlledByVoucher ? toMoney(capProgress) : null,
+    decayMode: outcomesControlledByVoucher ? Boolean(policySnapshot.decayMode) : false,
+    capReachedAt: outcomesControlledByVoucher ? policySnapshot.capReachedAt || null : null,
+    decayRounds: outcomesControlledByVoucher ? Number(policySnapshot.decayRounds || 0) : 0,
     lastMode:
-      (voucher?.metadata &&
-      typeof voucher.metadata === "object" &&
-      voucher.metadata.voucherPolicy &&
-      typeof voucher.metadata.voucherPolicy === "object"
-        ? voucher.metadata.voucherPolicy.lastMode
-        : null) || null,
+      (outcomesControlledByVoucher
+        ? (voucher?.metadata &&
+          typeof voucher.metadata === "object" &&
+          voucher.metadata.voucherPolicy &&
+          typeof voucher.metadata.voucherPolicy === "object"
+            ? voucher.metadata.voucherPolicy.lastMode
+            : null) || null
+        : "pure_rng"),
     jackpotExcludedFromCap: true,
   };
+}
+
+async function resolveOutcomeModeForTenant(tenantId) {
+  const normalizedTenantId = tenantId || null;
+  const system = await getJson(SYSTEM_CONFIG_KEY, {});
+  const tenant = normalizedTenantId ? await getJson(tenantConfigKey(normalizedTenantId), {}) : {};
+  const merged = { ...(system || {}), ...(tenant || {}) };
+  return normalizeOutcomeMode(merged?.outcomeMode, DEFAULT_OUTCOME_MODE);
 }
 
 async function resolveActiveVoucherForWallet({
@@ -124,10 +154,12 @@ async function resolveWalletVoucherPolicyState({
     transaction,
     persistWalletLink,
   });
+  const outcomeMode = await resolveOutcomeModeForTenant(tenantId || wallet.tenantId || null);
 
   return buildVoucherPolicyState({
     voucher,
     walletBalance: toNumber(wallet.balance, 0),
+    outcomeMode,
   });
 }
 

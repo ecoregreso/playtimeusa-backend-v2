@@ -15,6 +15,7 @@ const { staffAuth, requirePermission } = require("../middleware/staffAuth");
 const { PERMISSIONS } = require("../constants/permissions");
 const { getJson } = require("../utils/ownerSettings");
 const { DEFAULT_VOUCHER_WIN_CAP_POLICY } = require("../services/voucherWinCapPolicyService");
+const { DEFAULT_OUTCOME_MODE, normalizeOutcomeMode } = require("../services/outcomeModeService");
 
 const router = express.Router();
 
@@ -31,14 +32,24 @@ const DEFAULT_SYSTEM_CONFIG = {
   withdrawalsEnabled: true,
   messagingEnabled: true,
   pushEnabled: true,
+  outcomeMode: DEFAULT_OUTCOME_MODE,
   voucherWinCapPolicy: { ...DEFAULT_VOUCHER_WIN_CAP_POLICY },
 };
 
 async function getEffectiveConfig(tenantId) {
   const system = await getJson(SYSTEM_CONFIG_KEY, DEFAULT_SYSTEM_CONFIG);
-  if (!tenantId) return { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}) };
+  if (!tenantId) {
+    const effectiveNoTenant = { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}) };
+    effectiveNoTenant.outcomeMode = normalizeOutcomeMode(
+      effectiveNoTenant.outcomeMode,
+      DEFAULT_OUTCOME_MODE
+    );
+    return effectiveNoTenant;
+  }
   const tenant = await getJson(tenantConfigKey(tenantId), {});
-  return { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}), ...(tenant || {}) };
+  const effective = { ...DEFAULT_SYSTEM_CONFIG, ...(system || {}), ...(tenant || {}) };
+  effective.outcomeMode = normalizeOutcomeMode(effective.outcomeMode, DEFAULT_OUTCOME_MODE);
+  return effective;
 }
 
 function enforcePurchaseOrdersEnabled() {

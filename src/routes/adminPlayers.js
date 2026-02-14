@@ -2,7 +2,7 @@
 const express = require("express");
 const { Op } = require("sequelize");
 
-const { User, Wallet, Transaction, GameRound, Session } = require("../models");
+const { User, Wallet, Transaction, GameRound, Session, Voucher, StaffUser } = require("../models");
 const {
   staffAuth,
   requirePermission,
@@ -21,6 +21,9 @@ async function getOrCreateWallet(userId, tenantId) {
 }
 
 function computeLiveStatus({ user, wallet, session }) {
+  if (!user?.isActive) {
+    return { liveStatus: "deprecated", isLive: false, isDeprecated: true };
+  }
   const balance = Number(wallet?.balance || 0);
   const now = Date.now();
   const live =
@@ -34,7 +37,7 @@ function computeLiveStatus({ user, wallet, session }) {
   return { liveStatus: "deprecated", isLive: false, isDeprecated: true };
 }
 
-function toPlayerDto(user, wallet, session) {
+function toPlayerDto(user, wallet, session, deactivation = null) {
   const { liveStatus, isLive, isDeprecated } = computeLiveStatus({ user, wallet, session });
   const balance = wallet ? Number(wallet.balance || 0) : 0;
   return {
@@ -50,6 +53,39 @@ function toPlayerDto(user, wallet, session) {
     canDelete: balance <= 0,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
+    deactivation,
+  };
+}
+
+function toNum(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function toIsoOrNull(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function deactivationFromVoucher(voucher, staffMap = new Map()) {
+  if (!voucher) return null;
+  const metadata = voucher.metadata && typeof voucher.metadata === "object" ? voucher.metadata : {};
+  const staffId =
+    Number(metadata.deactivatedByStaffId || metadata.terminatedByStaffId || metadata.cashoutByStaffId || 0) || null;
+  return {
+    source: "voucher_termination",
+    voucherId: voucher.id,
+    voucherCode: voucher.code,
+    terminatedAt: toIsoOrNull(metadata.terminatedAt || metadata.cashoutAt || voucher.updatedAt),
+    terminatedReason: metadata.terminatedReason || metadata.deactivatedReason || null,
+    cashoutAmount: toNum(metadata.cashoutAmount, 0),
+    deactivatedAt: toIsoOrNull(metadata.deactivatedAt || metadata.terminatedAt || metadata.cashoutAt),
+    deactivatedByStaffId: staffId,
+    deactivatedByStaff: staffId ? staffMap.get(staffId) || null : null,
+    profileDeactivated: Boolean(metadata.profileDeactivated),
+    revokedSessionCount: toNum(metadata.revokedSessionCount, 0),
+    revokedRefreshTokenCount: toNum(metadata.revokedRefreshTokenCount, 0),
   };
 }
 
@@ -83,7 +119,7 @@ router.get(
       });
       const ids = players.map((p) => p.id);
 
-      const [wallets, sessions] = await Promise.all([
+      const [wallets, sessions, terminatedVouchers] = await Promise.all([
         ids.length
           ? Wallet.findAll({ where: { userId: ids } })
           : [],
@@ -97,6 +133,15 @@ router.get(
               order: [["lastSeenAt", "DESC"]],
             })
           : [],
+        ids.length
+          ? Voucher.findAll({
+              where: {
+                redeemedByUserId: ids,
+                status: { [Op.in]: ["terminated", "TERMINATED"] },
+              },
+              order: [["updatedAt", "DESC"]],
+            })
+          : [],
       ]);
 
       const walletMap = new Map(wallets.map((w) => [String(w.userId), w]));
@@ -106,10 +151,36 @@ router.get(
         if (!sessionMap.has(key)) sessionMap.set(key, s);
       }
 
+      const latestTerminatedVoucherByUser = new Map();
+      const deactivationStaffIds = new Set();
+      for (const voucher of terminatedVouchers) {
+        const userId = String(voucher.redeemedByUserId || "");
+        if (!userId) continue;
+        if (!latestTerminatedVoucherByUser.has(userId)) {
+          latestTerminatedVoucherByUser.set(userId, voucher);
+        }
+        const meta = voucher.metadata && typeof voucher.metadata === "object" ? voucher.metadata : {};
+        const staffId =
+          Number(meta.deactivatedByStaffId || meta.terminatedByStaffId || meta.cashoutByStaffId || 0) || null;
+        if (staffId) deactivationStaffIds.add(staffId);
+      }
+
+      const deactivationStaffRows = deactivationStaffIds.size
+        ? await StaffUser.findAll({
+            where: { id: { [Op.in]: Array.from(deactivationStaffIds) } },
+            attributes: ["id", "username", "role"],
+          })
+        : [];
+      const deactivationStaffMap = new Map(
+        deactivationStaffRows.map((s) => [s.id, { id: s.id, username: s.username, role: s.role }])
+      );
+
       const mapped = players.map((p) => {
         const wallet = walletMap.get(String(p.id)) || null;
         const session = sessionMap.get(String(p.id)) || null;
-        return toPlayerDto(p, wallet, session);
+        const terminatedVoucher = latestTerminatedVoucherByUser.get(String(p.id)) || null;
+        const deactivation = deactivationFromVoucher(terminatedVoucher, deactivationStaffMap);
+        return toPlayerDto(p, wallet, session, deactivation);
       });
 
       const filtered =
@@ -145,10 +216,40 @@ router.get(
         where: { actorType: "user", userId: player.id, revokedAt: { [Op.is]: null } },
         order: [["lastSeenAt", "DESC"]],
       });
+      const terminatedVoucher = await Voucher.findOne({
+        where: {
+          redeemedByUserId: player.id,
+          status: { [Op.in]: ["terminated", "TERMINATED"] },
+        },
+        order: [["updatedAt", "DESC"]],
+      });
+      const staffId =
+        Number(
+          terminatedVoucher?.metadata?.deactivatedByStaffId ||
+            terminatedVoucher?.metadata?.terminatedByStaffId ||
+            terminatedVoucher?.metadata?.cashoutByStaffId ||
+            0
+        ) || null;
+      const staff = staffId
+        ? await StaffUser.findOne({
+            where: { id: staffId },
+            attributes: ["id", "username", "role"],
+          })
+        : null;
 
       res.json({
         ok: true,
-        player: toPlayerDto(player, wallet, session),
+        player: toPlayerDto(
+          player,
+          wallet,
+          session,
+          deactivationFromVoucher(
+            terminatedVoucher,
+            new Map(
+              staff ? [[staff.id, { id: staff.id, username: staff.username, role: staff.role }]] : []
+            )
+          )
+        ),
       });
     } catch (err) {
       console.error("[ADMIN_PLAYERS] detail error:", err);

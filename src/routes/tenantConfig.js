@@ -7,6 +7,11 @@ const {
   normalizeVoucherWinCapPolicy,
   buildVoucherWinCapOptions,
 } = require("../services/voucherWinCapPolicyService");
+const {
+  DEFAULT_OUTCOME_MODE,
+  normalizeOutcomeMode,
+  buildOutcomeModeOptions,
+} = require("../services/outcomeModeService");
 
 const router = express.Router();
 
@@ -23,6 +28,7 @@ const DEFAULT_SYSTEM_CONFIG = {
   withdrawalsEnabled: true,
   messagingEnabled: true,
   pushEnabled: true,
+  outcomeMode: DEFAULT_OUTCOME_MODE,
   voucherWinCapPolicy: { ...DEFAULT_VOUCHER_WIN_CAP_POLICY },
 };
 
@@ -54,6 +60,7 @@ async function getSystemConfig() {
   const cfg = await getJson(SYSTEM_CONFIG_KEY, null);
   if (!cfg || typeof cfg !== "object") return { ...DEFAULT_SYSTEM_CONFIG };
   const merged = { ...DEFAULT_SYSTEM_CONFIG, ...cfg };
+  merged.outcomeMode = normalizeOutcomeMode(merged.outcomeMode, DEFAULT_OUTCOME_MODE);
   merged.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(merged.voucherWinCapPolicy);
   return merged;
 }
@@ -64,12 +71,19 @@ router.get("/", staffAuth, async (req, res) => {
     const system = await getSystemConfig();
     const tenant = tenantId ? await getJson(tenantConfigKey(tenantId), {}) : {};
     const tenantNormalized = { ...(tenant || {}) };
+    if (Object.prototype.hasOwnProperty.call(tenantNormalized, "outcomeMode")) {
+      tenantNormalized.outcomeMode = normalizeOutcomeMode(
+        tenantNormalized.outcomeMode,
+        system.outcomeMode
+      );
+    }
     if (Object.prototype.hasOwnProperty.call(tenantNormalized, "voucherWinCapPolicy")) {
       tenantNormalized.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(
         tenantNormalized.voucherWinCapPolicy
       );
     }
     const effective = { ...system, ...tenantNormalized };
+    effective.outcomeMode = normalizeOutcomeMode(effective.outcomeMode, system.outcomeMode);
     effective.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(effective.voucherWinCapPolicy);
     return res.json({ ok: true, tenantId, system, tenant: tenantNormalized, effective });
   } catch (err) {
@@ -97,6 +111,77 @@ router.get("/voucher-win-cap/options", staffAuth, async (req, res) => {
   }
 });
 
+router.get("/outcome-mode/options", staffAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const system = await getSystemConfig();
+    const tenant = tenantId ? await getJson(tenantConfigKey(tenantId), {}) : {};
+    const effective = { ...system, ...(tenant || {}) };
+    const outcomeMode = normalizeOutcomeMode(
+      effective?.outcomeMode,
+      system.outcomeMode || DEFAULT_OUTCOME_MODE
+    );
+
+    return res.json({
+      ok: true,
+      tenantId,
+      outcomeMode,
+      ...buildOutcomeModeOptions(outcomeMode),
+    });
+  } catch (err) {
+    console.error("[CONFIG] outcome mode options error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to load outcome mode options" });
+  }
+});
+
+router.put("/outcome-mode", staffAuth, requireVoucherPolicyWriteRole, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    if (!tenantId && req.staff?.role !== "owner") {
+      return res.status(400).json({ ok: false, error: "Tenant ID is required" });
+    }
+    if (!tenantId && req.staff?.role === "owner") {
+      return res.status(400).json({ ok: false, error: "Owner must specify tenantId" });
+    }
+
+    const incoming =
+      req.body?.outcomeMode ||
+      req.body?.mode ||
+      req.body?.value;
+    if (!incoming) {
+      return res.status(400).json({ ok: false, error: "outcomeMode is required" });
+    }
+
+    const current = await getJson(tenantConfigKey(tenantId), {});
+    const currentMode = normalizeOutcomeMode(
+      current?.outcomeMode,
+      DEFAULT_OUTCOME_MODE
+    );
+    const nextMode = normalizeOutcomeMode(incoming, currentMode);
+    const merged = { ...(current || {}), outcomeMode: nextMode };
+    await setJson(tenantConfigKey(tenantId), merged);
+
+    const system = await getSystemConfig();
+    const effective = {
+      ...system,
+      ...merged,
+      outcomeMode: normalizeOutcomeMode(merged.outcomeMode, system.outcomeMode),
+    };
+
+    return res.json({
+      ok: true,
+      tenantId,
+      outcomeMode: nextMode,
+      tenant: merged,
+      effective,
+      ...buildOutcomeModeOptions(nextMode),
+    });
+  } catch (err) {
+    console.error("[CONFIG] outcome mode update error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to save outcome mode" });
+  }
+});
+
 router.put("/voucher-win-cap/policy", staffAuth, requireVoucherPolicyWriteRole, async (req, res) => {
   try {
     const tenantId = resolveTenantId(req);
@@ -118,7 +203,11 @@ router.put("/voucher-win-cap/policy", staffAuth, requireVoucherPolicyWriteRole, 
     await setJson(tenantConfigKey(tenantId), merged);
 
     const system = await getSystemConfig();
-    const effective = { ...system, ...merged };
+    const effective = {
+      ...system,
+      ...merged,
+      outcomeMode: normalizeOutcomeMode(merged.outcomeMode, system.outcomeMode),
+    };
 
     return res.json({
       ok: true,

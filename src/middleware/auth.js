@@ -1,5 +1,6 @@
 const { initTenantContext } = require("./tenantContext");
 const { verifyAccessToken } = require("../utils/jwt");
+const User = require("../models/User");
 
 function extractToken(req) {
   const header = req.headers.authorization || '';
@@ -35,6 +36,25 @@ async function requireAuth(req, res, next) {
     tenantId: payload.tenantId || null,
     distributorId: payload.distributorId || null,
   };
+
+  try {
+    const user = await User.findByPk(payload.sub, {
+      attributes: ["id", "role", "isActive", "tenantId"],
+    });
+    if (!user) {
+      return res.status(401).json({ error: "Invalid user" });
+    }
+    if (!user.isActive) {
+      return res.status(403).json({ error: "Account disabled" });
+    }
+    if (String(user.role || "") !== String(payload.role || "")) {
+      return res.status(403).json({ error: "Role mismatch" });
+    }
+    req.user.tenantId = user.tenantId || req.user.tenantId || null;
+    req.auth.tenantId = req.user.tenantId;
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to validate user account" });
+  }
 
   try {
     return await initTenantContext(
