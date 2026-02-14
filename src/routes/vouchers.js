@@ -30,8 +30,10 @@ const {
   computeMaxCashoutFromPercent,
 } = require("../services/voucherWinCapPolicyService");
 const {
+  OUTCOME_MODES,
   DEFAULT_OUTCOME_MODE,
   normalizeOutcomeMode,
+  isVoucherControlledOutcomeMode,
 } = require("../services/outcomeModeService");
 const { applyPendingBonusIfEligible, buildBonusState } = require("../services/bonusService");
 const { logEvent } = require("../services/auditService");
@@ -235,14 +237,29 @@ async function getOrCreateWallet(userId, tenantId, currency = "FUN", transaction
   return wallet;
 }
 
-async function creditVoucherToWallet({ voucher, userId, staff, transaction }) {
+async function creditVoucherToWallet({
+  voucher,
+  userId,
+  staff,
+  transaction,
+  effectiveOutcomeMode = DEFAULT_OUTCOME_MODE,
+}) {
   const t = transaction;
   const currency = voucher.currency || "FUN";
   const wallet = await getOrCreateWallet(userId, voucher.tenantId, currency, t);
   const amount = Number(voucher.amount || 0);
   const bonus = Number(voucher.bonusAmount || 0);
   const before = Number(wallet.balance || 0);
-  const maxCashout = resolveVoucherMaxCashout(voucher, amount + bonus);
+  const normalizedOutcomeMode = normalizeOutcomeMode(
+    effectiveOutcomeMode,
+    DEFAULT_OUTCOME_MODE
+  );
+  const outcomesControlledByVoucher = isVoucherControlledOutcomeMode(
+    normalizedOutcomeMode
+  );
+  const maxCashout = outcomesControlledByVoucher
+    ? resolveVoucherMaxCashout(voucher, amount + bonus)
+    : 0;
 
   wallet.balance = before + amount;
   wallet.bonusPending = Number(wallet.bonusPending || 0) + bonus;
@@ -262,6 +279,8 @@ async function creditVoucherToWallet({ voucher, userId, staff, transaction }) {
         voucherId: voucher.id,
         bonusPending: bonus,
         maxCashout,
+        outcomeMode: normalizedOutcomeMode,
+        outcomesControlledByVoucher,
         activeVoucherId: voucher.id,
         redeemedByStaffId: staff?.id || null,
         redeemerRole: staff?.role || null,
@@ -286,24 +305,40 @@ async function creditVoucherToWallet({ voucher, userId, staff, transaction }) {
       ? voucher.metadata.voucherPolicy
       : {};
   voucher.maxCashout = maxCashout;
+  const nextVoucherPolicy = outcomesControlledByVoucher
+    ? {
+        ...priorPolicy,
+        maxCashout,
+        capReachedAt: priorPolicy.capReachedAt || null,
+        decayMode: Boolean(priorPolicy.decayMode),
+        decayRounds: Math.max(0, Number(priorPolicy.decayRounds || 0)),
+        decayRate: Number(priorPolicy.decayRate || DEFAULT_VOUCHER_WIN_CAP_POLICY.decayRate),
+        minDecayAmount: Number(
+          priorPolicy.minDecayAmount || DEFAULT_VOUCHER_WIN_CAP_POLICY.minDecayAmount
+        ),
+        stakeDecayMultiplier: Number(
+          priorPolicy.stakeDecayMultiplier || DEFAULT_VOUCHER_WIN_CAP_POLICY.stakeDecayMultiplier
+        ),
+        trackedBalance: Number(priorPolicy.trackedBalance || amount),
+      }
+    : {
+        ...priorPolicy,
+        maxCashout: 0,
+        capReachedAt: null,
+        decayMode: false,
+        decayRounds: 0,
+        trackedBalance: null,
+        lastMode: OUTCOME_MODES.PURE_RNG,
+      };
   voucher.metadata = {
     ...(voucher.metadata || {}),
     maxCashout,
-    voucherPolicy: {
-      ...priorPolicy,
-      maxCashout,
-      capReachedAt: priorPolicy.capReachedAt || null,
-      decayMode: Boolean(priorPolicy.decayMode),
-      decayRounds: Math.max(0, Number(priorPolicy.decayRounds || 0)),
-      decayRate: Number(priorPolicy.decayRate || DEFAULT_VOUCHER_WIN_CAP_POLICY.decayRate),
-      minDecayAmount: Number(
-        priorPolicy.minDecayAmount || DEFAULT_VOUCHER_WIN_CAP_POLICY.minDecayAmount
-      ),
-      stakeDecayMultiplier: Number(
-        priorPolicy.stakeDecayMultiplier || DEFAULT_VOUCHER_WIN_CAP_POLICY.stakeDecayMultiplier
-      ),
-      trackedBalance: Number(priorPolicy.trackedBalance || amount),
-    },
+    voucherPolicy: nextVoucherPolicy,
+    outcomeMode: normalizedOutcomeMode,
+    outcomesControlledByVoucher,
+    capStrategy: outcomesControlledByVoucher
+      ? voucher.metadata?.capStrategy
+      : { mode: OUTCOME_MODES.PURE_RNG, percent: null, source: "outcome_mode" },
     redeemedByStaffId: staff?.id || null,
     redeemedByRole: staff?.role || null,
   };
@@ -559,6 +594,13 @@ router.post(
         winCapMode === undefined || winCapMode === null || winCapMode === ""
           ? null
           : String(winCapMode);
+      const normalizedOutcomeMode = normalizeOutcomeMode(
+        req.effectiveConfig?.outcomeMode,
+        DEFAULT_OUTCOME_MODE
+      );
+      const outcomesControlledByVoucher = isVoucherControlledOutcomeMode(
+        normalizedOutcomeMode
+      );
 
       if (!Number.isFinite(valueAmount) || valueAmount <= 0) {
         await logEvent({
@@ -580,10 +622,15 @@ router.post(
         return res.status(400).json({ error: "Invalid amount" });
       }
 
-      if (valueMaxCashoutRaw !== null && (!Number.isFinite(valueMaxCashoutRaw) || valueMaxCashoutRaw <= 0)) {
+      if (
+        outcomesControlledByVoucher &&
+        valueMaxCashoutRaw !== null &&
+        (!Number.isFinite(valueMaxCashoutRaw) || valueMaxCashoutRaw <= 0)
+      ) {
         return res.status(400).json({ error: "Invalid maxCashout" });
       }
       if (
+        outcomesControlledByVoucher &&
         valueWinCapMode !== null &&
         valueWinCapMode !== WIN_CAP_MODES.FIXED &&
         valueWinCapMode !== WIN_CAP_MODES.RANDOM
@@ -591,6 +638,7 @@ router.post(
         return res.status(400).json({ error: "Invalid winCapMode" });
       }
       if (
+        outcomesControlledByVoucher &&
         valueWinCapPercentRaw !== null &&
         (!Number.isFinite(valueWinCapPercentRaw) || valueWinCapPercentRaw <= 0)
       ) {
@@ -602,17 +650,27 @@ router.post(
       const pin = randomNumeric(6);
       const userCode = code; // mirrors code; not stored separately
       const totalCredit = valueAmount + valueBonus;
-      const capResolution = computeVoucherMaxCashout({
-        amount: valueAmount,
-        bonusAmount: valueBonus,
-        requestedMaxCashout: valueMaxCashoutRaw,
-        requestedWinCapMode: valueWinCapMode,
-        requestedWinCapPercent: valueWinCapPercentRaw,
-        policyRaw: req.effectiveConfig?.voucherWinCapPolicy || DEFAULT_VOUCHER_WIN_CAP_POLICY,
-      });
+      const capResolution = outcomesControlledByVoucher
+        ? computeVoucherMaxCashout({
+            amount: valueAmount,
+            bonusAmount: valueBonus,
+            requestedMaxCashout: valueMaxCashoutRaw,
+            requestedWinCapMode: valueWinCapMode,
+            requestedWinCapPercent: valueWinCapPercentRaw,
+            policyRaw: req.effectiveConfig?.voucherWinCapPolicy || DEFAULT_VOUCHER_WIN_CAP_POLICY,
+          })
+        : {
+            maxCashout: 0,
+            capMode: null,
+            capPercent: null,
+            capSource: "outcome_mode_pure_rng",
+            normalizedPolicy: normalizeVoucherWinCapPolicy(
+              req.effectiveConfig?.voucherWinCapPolicy || DEFAULT_VOUCHER_WIN_CAP_POLICY
+            ),
+          };
       const valueMaxCashout = capResolution.maxCashout;
 
-      if (valueMaxCashout < totalCredit) {
+      if (outcomesControlledByVoucher && valueMaxCashout < totalCredit) {
         return res.status(400).json({ error: "maxCashout must be greater than or equal to total voucher credit" });
       }
 
@@ -704,6 +762,53 @@ router.post(
         pool.poolBalanceCents = Number(pool.poolBalanceCents || 0) - toCents(totalCredit);
         await pool.save({ transaction: t });
 
+        const voucherMetadata = {
+          userCode,
+          maxCashout: valueMaxCashout,
+          createdByStaffId: req.staff?.id || null,
+          createdByStaffUsername: req.staff?.username || null,
+          createdByStaffRole: req.staff?.role || null,
+          capStrategy: outcomesControlledByVoucher
+            ? {
+                mode: capResolution.capMode,
+                percent: capResolution.capPercent,
+                source: capResolution.capSource,
+                voucherAmountBase: valueAmount,
+              }
+            : {
+                mode: OUTCOME_MODES.PURE_RNG,
+                percent: null,
+                source: "outcome_mode",
+                voucherAmountBase: valueAmount,
+              },
+          voucherPolicy: outcomesControlledByVoucher
+            ? {
+                maxCashout: valueMaxCashout,
+                capReachedAt: null,
+                decayMode: false,
+                decayRounds: 0,
+                capMode: capResolution.capMode,
+                capPercent: capResolution.capPercent,
+                decayRate: capResolution.normalizedPolicy.decayRate,
+                minDecayAmount: capResolution.normalizedPolicy.minDecayAmount,
+                stakeDecayMultiplier: capResolution.normalizedPolicy.stakeDecayMultiplier,
+                trackedBalance: valueAmount,
+              }
+            : {
+                maxCashout: 0,
+                capReachedAt: null,
+                decayMode: false,
+                decayRounds: 0,
+                capMode: null,
+                capPercent: null,
+                trackedBalance: null,
+                lastMode: OUTCOME_MODES.PURE_RNG,
+              },
+          outcomeMode: normalizedOutcomeMode,
+          outcomesControlledByVoucher,
+          source: "admin_panel",
+        };
+
         // Retry a few times to avoid rare collision on the unique constraint
         for (let attempt = 0; attempt < 5; attempt++) {
           try {
@@ -718,32 +823,7 @@ router.post(
                 maxCashout: valueMaxCashout,
                 currency: currencyCode,
                 status: "new",
-                metadata: {
-                  userCode,
-                  maxCashout: valueMaxCashout,
-                  createdByStaffId: req.staff?.id || null,
-                  createdByStaffUsername: req.staff?.username || null,
-                  createdByStaffRole: req.staff?.role || null,
-                  capStrategy: {
-                    mode: capResolution.capMode,
-                    percent: capResolution.capPercent,
-                    source: capResolution.capSource,
-                    voucherAmountBase: valueAmount,
-                  },
-                  voucherPolicy: {
-                    maxCashout: valueMaxCashout,
-                    capReachedAt: null,
-                    decayMode: false,
-                    decayRounds: 0,
-                    capMode: capResolution.capMode,
-                    capPercent: capResolution.capPercent,
-                    decayRate: capResolution.normalizedPolicy.decayRate,
-                    minDecayAmount: capResolution.normalizedPolicy.minDecayAmount,
-                    stakeDecayMultiplier: capResolution.normalizedPolicy.stakeDecayMultiplier,
-                    trackedBalance: valueAmount,
-                  },
-                  source: "admin_panel",
-                },
+                metadata: voucherMetadata,
               },
               { transaction: t }
             );
@@ -782,7 +862,9 @@ router.post(
         voucher: {
           ...voucher.toJSON(),
           status: "new", // front-end expects lowercase
-          maxCashout: valueMaxCashout,
+          maxCashout: outcomesControlledByVoucher ? valueMaxCashout : null,
+          outcomeMode: normalizedOutcomeMode,
+          outcomesControlledByVoucher,
           winCapMode: capResolution.capMode,
           winCapPercent: capResolution.capPercent,
         },
@@ -810,6 +892,8 @@ router.post(
           amountCents: toCents(valueAmount),
           bonusCents: toCents(valueBonus),
           maxCashoutCents: toCents(valueMaxCashout),
+          outcomeMode: normalizedOutcomeMode,
+          outcomesControlledByVoucher,
           winCapMode: capResolution.capMode,
           winCapPercent: capResolution.capPercent,
           currency: voucher.currency || "FUN",
@@ -835,6 +919,8 @@ router.post(
           amount: valueAmount,
           bonusAmount: valueBonus,
           maxCashout: valueMaxCashout,
+          outcomeMode: normalizedOutcomeMode,
+          outcomesControlledByVoucher,
           winCapMode: capResolution.capMode,
           winCapPercent: capResolution.capPercent,
           currency: voucher.currency || "FUN",
@@ -910,6 +996,7 @@ router.post(
         userId,
         staff: req.staff,
         transaction: t,
+        effectiveOutcomeMode: req.effectiveConfig?.outcomeMode || DEFAULT_OUTCOME_MODE,
       });
 
       await recordLedgerEvent({
@@ -1408,6 +1495,14 @@ router.post(
 
       const userId = req.user.id;
       const currency = voucher.currency || "FUN";
+      const effectiveConfig = await getEffectiveConfig(req.auth?.tenantId || null);
+      const normalizedOutcomeMode = normalizeOutcomeMode(
+        effectiveConfig?.outcomeMode,
+        DEFAULT_OUTCOME_MODE
+      );
+      const outcomesControlledByVoucher = isVoucherControlledOutcomeMode(
+        normalizedOutcomeMode
+      );
 
       const wallet = await getOrCreateWallet(userId, req.auth?.tenantId || null, currency);
 
@@ -1415,7 +1510,9 @@ router.post(
       const amount = Number(voucher.amount || 0);
       const bonus = Number(voucher.bonusAmount || 0);
       const totalCredit = amount + bonus;
-      const maxCashout = resolveVoucherMaxCashout(voucher, amount + bonus);
+      const maxCashout = outcomesControlledByVoucher
+        ? resolveVoucherMaxCashout(voucher, amount + bonus)
+        : 0;
 
       wallet.balance = before + amount;
       wallet.bonusPending = Number(wallet.bonusPending || 0) + bonus;
@@ -1435,6 +1532,8 @@ router.post(
           amount,
           bonusPending: bonus,
           maxCashout,
+          outcomeMode: normalizedOutcomeMode,
+          outcomesControlledByVoucher,
           activeVoucherId: voucher.id,
         },
         createdByUserId: userId,
@@ -1448,24 +1547,40 @@ router.post(
           ? voucher.metadata.voucherPolicy
           : {};
       voucher.maxCashout = maxCashout;
+      const nextVoucherPolicy = outcomesControlledByVoucher
+        ? {
+            ...priorPolicy,
+            maxCashout,
+            capReachedAt: priorPolicy.capReachedAt || null,
+            decayMode: Boolean(priorPolicy.decayMode),
+            decayRounds: Math.max(0, Number(priorPolicy.decayRounds || 0)),
+            decayRate: Number(priorPolicy.decayRate || DEFAULT_VOUCHER_WIN_CAP_POLICY.decayRate),
+            minDecayAmount: Number(
+              priorPolicy.minDecayAmount || DEFAULT_VOUCHER_WIN_CAP_POLICY.minDecayAmount
+            ),
+            stakeDecayMultiplier: Number(
+              priorPolicy.stakeDecayMultiplier || DEFAULT_VOUCHER_WIN_CAP_POLICY.stakeDecayMultiplier
+            ),
+            trackedBalance: Number(priorPolicy.trackedBalance || amount),
+          }
+        : {
+            ...priorPolicy,
+            maxCashout: 0,
+            capReachedAt: null,
+            decayMode: false,
+            decayRounds: 0,
+            trackedBalance: null,
+            lastMode: OUTCOME_MODES.PURE_RNG,
+          };
       voucher.metadata = {
         ...(voucher.metadata || {}),
         maxCashout,
-        voucherPolicy: {
-          ...priorPolicy,
-          maxCashout,
-          capReachedAt: priorPolicy.capReachedAt || null,
-          decayMode: Boolean(priorPolicy.decayMode),
-          decayRounds: Math.max(0, Number(priorPolicy.decayRounds || 0)),
-          decayRate: Number(priorPolicy.decayRate || DEFAULT_VOUCHER_WIN_CAP_POLICY.decayRate),
-          minDecayAmount: Number(
-            priorPolicy.minDecayAmount || DEFAULT_VOUCHER_WIN_CAP_POLICY.minDecayAmount
-          ),
-          stakeDecayMultiplier: Number(
-            priorPolicy.stakeDecayMultiplier || DEFAULT_VOUCHER_WIN_CAP_POLICY.stakeDecayMultiplier
-          ),
-          trackedBalance: Number(priorPolicy.trackedBalance || amount),
-        },
+        voucherPolicy: nextVoucherPolicy,
+        outcomeMode: normalizedOutcomeMode,
+        outcomesControlledByVoucher,
+        capStrategy: outcomesControlledByVoucher
+          ? voucher.metadata?.capStrategy
+          : { mode: OUTCOME_MODES.PURE_RNG, percent: null, source: "outcome_mode" },
       };
       await voucher.save();
 
@@ -1493,6 +1608,8 @@ router.post(
           amountCents: toCents(amount),
           bonusCents: toCents(bonus),
           maxCashoutCents: toCents(maxCashout),
+          outcomeMode: normalizedOutcomeMode,
+          outcomesControlledByVoucher,
           currency,
         },
       });
@@ -1517,6 +1634,8 @@ router.post(
           amount,
           bonus,
           maxCashout,
+          outcomeMode: normalizedOutcomeMode,
+          outcomesControlledByVoucher,
           currency,
         },
       });
