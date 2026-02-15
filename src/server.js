@@ -296,6 +296,11 @@ app.use("/vouchers", voucherRoutes);
 app.use("/admin/players", adminPlayersRoutes);
 app.use("/admin/reports", reportsRoutes);
 app.use("/admin/analytics", analyticsRoutes);
+// Compatibility aliases for admin UI base URL misconfiguration (extra /api prefix).
+app.use("/api/admin/reports", reportsRoutes);
+app.use("/api/admin/analytics", analyticsRoutes);
+app.use("/api/api/v1/admin/reports", reportsRoutes);
+app.use("/api/api/v1/admin/analytics", analyticsRoutes);
 app.use("/admin/safety", adminSafetyRoutes);
 app.use("/admin/staff", adminStaffRoutes);
 app.use("/admin/transactions", adminTransactionsRoutes);
