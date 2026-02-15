@@ -9,6 +9,7 @@ const {
   Voucher,
   DepositIntent,
   WithdrawalIntent,
+  Transaction,
   StaffUser,
   User,
   Session,
@@ -142,6 +143,170 @@ function buildBucketExpr(column, range) {
   return bucketExpression(column, range.bucket, range.timezone);
 }
 
+function buildTransactionWhere({ range, filters = {}, includeTypes }) {
+  const clauses = ['"createdAt" >= :startDate', '"createdAt" < :endDateExclusive'];
+  const replacements = {
+    startDate: range.startDate,
+    endDateExclusive: range.endDateExclusive,
+  };
+
+  if (includeTypes?.length) {
+    clauses.push(`type IN (:txTypes)`);
+    replacements.txTypes = includeTypes;
+  }
+
+  if (filters.gameKey) {
+    clauses.push(
+      `(COALESCE(metadata->>'gameId', metadata->>'gameKey', SPLIT_PART(COALESCE(reference, ''), ':', 2), 'Unknown') = :gameKey)`
+    );
+    replacements.gameKey = String(filters.gameKey);
+  }
+
+  return { clause: clauses.join(" AND "), replacements };
+}
+
+async function getRevenueSeriesFromTransactions(range, filters) {
+  const bucketExpr = buildBucketExpr("createdAt", range);
+  const { clause, replacements } = buildTransactionWhere({
+    range,
+    filters,
+    includeTypes: ["game_bet", "game_win"],
+  });
+
+  const sql = `
+    SELECT ${bucketExpr} AS t,
+      ROUND(SUM(CASE WHEN type = 'game_bet' THEN ABS(COALESCE(amount, 0)) ELSE 0 END) * 100)::bigint AS "betsCents",
+      ROUND(SUM(CASE WHEN type = 'game_win' THEN ABS(COALESCE(amount, 0)) ELSE 0 END) * 100)::bigint AS "winsCents"
+    FROM transactions
+    WHERE ${clause}
+    GROUP BY t
+    ORDER BY t ASC
+  `;
+
+  const rows = await sequelize.query(sql, {
+    replacements,
+    type: QueryTypes.SELECT,
+  });
+
+  return rows.map((row) => {
+    const bets = Number(row.betsCents || 0);
+    const wins = Number(row.winsCents || 0);
+    return {
+      t: formatBucketValue(row.t),
+      betsCents: bets,
+      winsCents: wins,
+      bonusesCents: 0,
+      ngrCents: bets - wins,
+    };
+  });
+}
+
+async function getDepositWithdrawalSeriesFromTransactions(range) {
+  const bucketExpr = buildBucketExpr("createdAt", range);
+  const { clause, replacements } = buildTransactionWhere({
+    range,
+    includeTypes: [
+      "credit",
+      "voucher_credit",
+      "debit",
+      "voucher_debit",
+      "manual_adjustment",
+    ],
+  });
+
+  const sql = `
+    SELECT ${bucketExpr} AS t,
+      ROUND(
+        SUM(
+          CASE
+            WHEN type IN ('credit', 'voucher_credit') THEN ABS(COALESCE(amount, 0))
+            WHEN type = 'manual_adjustment' AND COALESCE(amount, 0) > 0 THEN ABS(COALESCE(amount, 0))
+            ELSE 0
+          END
+        ) * 100
+      )::bigint AS "depositsCents",
+      ROUND(
+        SUM(
+          CASE
+            WHEN type IN ('debit', 'voucher_debit') THEN ABS(COALESCE(amount, 0))
+            WHEN type = 'manual_adjustment' AND COALESCE(amount, 0) < 0 THEN ABS(COALESCE(amount, 0))
+            ELSE 0
+          END
+        ) * 100
+      )::bigint AS "withdrawalsCents"
+    FROM transactions
+    WHERE ${clause}
+    GROUP BY t
+    ORDER BY t ASC
+  `;
+
+  const rows = await sequelize.query(sql, {
+    replacements,
+    type: QueryTypes.SELECT,
+  });
+
+  return rows.map((row) => ({
+    t: formatBucketValue(row.t),
+    depositsCents: Number(row.depositsCents || 0),
+    withdrawalsCents: Number(row.withdrawalsCents || 0),
+  }));
+}
+
+async function getRevenueByGameFromTransactions(range, filters) {
+  const { clause, replacements } = buildTransactionWhere({
+    range,
+    filters,
+    includeTypes: ["game_bet", "game_win"],
+  });
+
+  const sql = `
+    SELECT
+      COALESCE(
+        metadata->>'gameId',
+        metadata->>'gameKey',
+        SPLIT_PART(COALESCE(reference, ''), ':', 2),
+        'Unknown'
+      ) AS "gameKey",
+      ROUND(SUM(CASE WHEN type = 'game_bet' THEN ABS(COALESCE(amount, 0)) ELSE 0 END) * 100)::bigint AS "betsCents",
+      ROUND(SUM(CASE WHEN type = 'game_win' THEN ABS(COALESCE(amount, 0)) ELSE 0 END) * 100)::bigint AS "winsCents",
+      SUM(CASE WHEN type = 'game_bet' THEN 1 ELSE 0 END)::bigint AS "spins"
+    FROM transactions
+    WHERE ${clause}
+    GROUP BY "gameKey"
+  `;
+
+  const rows = await sequelize.query(sql, { replacements, type: QueryTypes.SELECT });
+  const mapped = rows.map((row) => {
+    const bets = Number(row.betsCents || 0);
+    const wins = Number(row.winsCents || 0);
+    return {
+      gameKey: row.gameKey || "Unknown",
+      betsCents: bets,
+      winsCents: wins,
+      ngrCents: bets - wins,
+      spins: Number(row.spins || 0),
+    };
+  });
+
+  mapped.sort((a, b) => b.ngrCents - a.ngrCents);
+  const top = mapped.slice(0, 10);
+  const other = mapped.slice(10);
+  if (other.length) {
+    const rollup = other.reduce(
+      (acc, row) => {
+        acc.betsCents += row.betsCents;
+        acc.winsCents += row.winsCents;
+        acc.ngrCents += row.ngrCents;
+        acc.spins += row.spins;
+        return acc;
+      },
+      { gameKey: "Other", betsCents: 0, winsCents: 0, ngrCents: 0, spins: 0 }
+    );
+    top.push(rollup);
+  }
+  return top;
+}
+
 async function getRevenueSeries(range, filters) {
   const bucketExpr = buildBucketExpr("ts", range);
   const { clause, replacements } = buildLedgerWhere({
@@ -171,7 +336,7 @@ async function getRevenueSeries(range, filters) {
     type: QueryTypes.SELECT,
   });
 
-  return rows.map((row) => {
+  const mapped = rows.map((row) => {
     const bets = Number(row.betsCents || 0);
     const wins = Number(row.winsCents || 0);
     const bonuses = Number(row.bonusesCents || 0);
@@ -183,6 +348,9 @@ async function getRevenueSeries(range, filters) {
       ngrCents: bets - wins - bonuses,
     };
   });
+
+  if (mapped.length > 0) return mapped;
+  return getRevenueSeriesFromTransactions(range, filters);
 }
 
 async function getHandlePayoutSeries(range, filters) {
@@ -218,11 +386,14 @@ async function getDepositWithdrawalSeries(range, filters) {
     type: QueryTypes.SELECT,
   });
 
-  return rows.map((row) => ({
+  const mapped = rows.map((row) => ({
     t: formatBucketValue(row.t),
     depositsCents: Number(row.depositsCents || 0),
     withdrawalsCents: Number(row.withdrawalsCents || 0),
   }));
+
+  if (mapped.length > 0) return mapped;
+  return getDepositWithdrawalSeriesFromTransactions(range, filters);
 }
 
 async function getRevenueByGame(range, filters) {
@@ -272,7 +443,8 @@ async function getRevenueByGame(range, filters) {
     top.push(rollup);
   }
 
-  return top;
+  if (top.length > 0) return top;
+  return getRevenueByGameFromTransactions(range, filters);
 }
 
 async function getActiveUsers(range, filters) {
