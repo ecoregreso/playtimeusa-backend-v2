@@ -75,6 +75,16 @@ function slugify(input) {
     .slice(0, 32);
 }
 
+function normalizeTenantIdInput(raw) {
+  if (raw === null || raw === undefined) return null;
+  const v = String(raw).trim().toLowerCase();
+  return v || null;
+}
+
+function isUuidLike(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ""));
+}
+
 async function ensureUniqueUsername({ tenantId, desired }, transaction) {
   const base = desired && String(desired).trim() ? String(desired).trim() : "admin";
   const normalized = base.slice(0, 48);
@@ -1114,6 +1124,7 @@ router.post(
   async (req, res) => {
     const name = String(req.body?.name || "").trim();
     const status = String(req.body?.status || "active").trim() || "active";
+    const requestedTenantId = normalizeTenantIdInput(req.body?.tenantId || req.body?.id);
 
     const seedCreditsCents = clampCents(req.body?.seedCreditsCents || req.body?.initialCreditsCents || 0);
     const seedVoucherPoolCents = clampCents(req.body?.seedVoucherPoolCents || req.body?.initialVoucherPoolCents || 0);
@@ -1128,12 +1139,31 @@ router.post(
     if (!name) {
       return res.status(400).json({ ok: false, error: "Tenant name is required" });
     }
+    if (requestedTenantId && !isUuidLike(requestedTenantId)) {
+      return res.status(400).json({
+        ok: false,
+        error: "tenantId must be a valid UUID (example: 123e4567-e89b-12d3-a456-426614174000)",
+      });
+    }
 
     try {
       const result = await withRequestTransaction(req, async (t) => {
+        if (requestedTenantId) {
+          const [existingTenant, existingDistributor] = await Promise.all([
+            Tenant.findByPk(requestedTenantId, { transaction: t, lock: t.LOCK.UPDATE }),
+            Distributor.findByPk(requestedTenantId, { transaction: t, lock: t.LOCK.UPDATE }),
+          ]);
+          if (existingTenant || existingDistributor) {
+            const conflict = new Error(`Tenant ID already exists: ${requestedTenantId}`);
+            conflict.status = 409;
+            throw conflict;
+          }
+        }
+
         // 1) create tenant
         const tenant = await Tenant.create(
           {
+            ...(requestedTenantId ? { id: requestedTenantId } : {}),
             name,
             status,
             distributorId: null,
@@ -1284,6 +1314,15 @@ router.post(
       return res.status(201).json({ ok: true, ...result });
     } catch (err) {
       console.error("[OWNER] tenant create error:", err);
+      if (err?.status) {
+        return res.status(err.status).json({ ok: false, error: err.message || "Tenant creation failed" });
+      }
+      if (
+        requestedTenantId &&
+        (err?.name === "SequelizeUniqueConstraintError" || err?.name === "SequelizeDatabaseError")
+      ) {
+        return res.status(409).json({ ok: false, error: `Tenant ID already exists: ${requestedTenantId}` });
+      }
       return res.status(500).json({ ok: false, error: "Failed to create tenant" });
     }
   }
