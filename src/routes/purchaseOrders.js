@@ -642,7 +642,12 @@ router.post(
   requirePermission(PERMISSIONS.FINANCE_WRITE),
   async (req, res) => {
     try {
-      const result = await sequelize.transaction(async (t) => {
+      const transaction = req.transaction || null;
+      if (!transaction) {
+        return res.status(500).json({ ok: false, error: "Missing tenant transaction context" });
+      }
+
+      const result = await (async (t) => {
         const order = await PurchaseOrder.findByPk(req.params.id, {
           transaction: t,
           lock: t.LOCK.UPDATE,
@@ -762,7 +767,7 @@ router.post(
         });
 
         return { order, wallet };
-      });
+      })(transaction);
 
       await notifyOrderStatusByEmail({
         tenantId: result.order.tenantId,
