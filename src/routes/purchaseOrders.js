@@ -7,6 +7,8 @@ const {
   OwnerSetting,
   StaffUser,
   StaffMessage,
+  TenantWallet,
+  CreditLedger,
 } = require("../models");
 const { sequelize } = require("../db");
 const { sendPushToStaffIds } = require("../utils/push");
@@ -80,6 +82,8 @@ const STATUS = {
   COMPLETED: "completed",
   ACKNOWLEDGED: "acknowledged",
 };
+
+const WALLET_PROVIDER_WASABI = "wasabi";
 
 function ownerKey(tenantId) {
   return `${tenantId}:ownerBtcAddress`;
@@ -156,7 +160,7 @@ async function notifyOrderStatusByEmail({ tenantId, order }) {
   }
 }
 
-async function addMessage({ orderId, sender, senderRole, body, tenantId }) {
+async function addMessage({ orderId, sender, senderRole, body, tenantId, transaction = undefined }) {
   if (!body) return null;
   return PurchaseOrderMessage.create({
     orderId,
@@ -164,7 +168,43 @@ async function addMessage({ orderId, sender, senderRole, body, tenantId }) {
     senderRole,
     tenantId,
     body,
-  });
+  }, { transaction });
+}
+
+function isFinanceManager(staff) {
+  return Boolean((staff?.permissions || []).includes(PERMISSIONS.FINANCE_WRITE));
+}
+
+function isRequester(order, staff) {
+  if (!order || !staff) return false;
+  if (order.requestedById != null && staff.id != null) {
+    return Number(order.requestedById) === Number(staff.id);
+  }
+  return String(order.requestedBy || "") === String(staff.username || "");
+}
+
+function toCents(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.round(numeric * 100);
+}
+
+function formatFunAmountFromCents(cents) {
+  const amount = Number(cents || 0) / 100;
+  return amount.toFixed(2);
+}
+
+function normalizeWalletProvider(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function buildReceiptCode(orderId, now = new Date()) {
+  const stamp = now.toISOString().replace(/\D/g, "").slice(0, 14);
+  const suffix = String(orderId || "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .slice(0, 8)
+    .toUpperCase();
+  return `PO-${stamp}-${suffix || "NA"}`;
 }
 
 // GET default owner BTC address
@@ -242,8 +282,21 @@ router.post(
         requestedBy: req.staff?.username || "agent",
         requestedById: req.staff?.id || null,
         tenantId,
+        ownerApprovedAt: null,
+        paymentConfirmedAt: null,
+        paymentWalletProvider: null,
+        creditedAmountCents: null,
+        receiptCode: null,
+        receiptIssuedAt: null,
       });
 
+      await addMessage({
+        orderId: order.id,
+        sender: req.staff?.username || "staff",
+        senderRole: req.staff?.role || "staff",
+        body: `Stage 1 initiated: tenant requested ${fun.toFixed(2)} FUN for ${btc.toFixed(8)} BTC.`,
+        tenantId,
+      });
       if (note?.trim()) {
         await addMessage({
           orderId: order.id,
@@ -333,11 +386,77 @@ router.get(
 
 async function canAccessOrder(order, staff) {
   if (!order) return false;
-  const perms = staff?.permissions || [];
-  if (order.tenantId && staff?.tenantId && order.tenantId !== staff.tenantId) return false;
-  if (perms.includes(PERMISSIONS.FINANCE_WRITE)) return true;
-  return order.requestedById === staff?.id || order.requestedBy === staff?.username;
+  if (staff?.role !== "owner" && order.tenantId && staff?.tenantId && order.tenantId !== staff.tenantId) {
+    return false;
+  }
+  if (staff?.role === "owner") return true;
+  if (isFinanceManager(staff)) return true;
+  return isRequester(order, staff);
 }
+
+// OWNER/FINANCE inbox for funcoin orders only
+router.get(
+  "/owner-inbox",
+  staffAuth,
+  requirePermission(PERMISSIONS.FINANCE_READ),
+  async (req, res) => {
+    try {
+      const isOwnerRole = req.staff?.role === "owner";
+      const statusFilter = String(req.query?.status || "").trim();
+      const tenantId = isOwnerRole ? normalizeTenantId(req.query?.tenantId) : req.staff?.tenantId;
+
+      const where = {};
+      if (tenantId) where.tenantId = tenantId;
+      if (statusFilter) where.status = statusFilter;
+
+      if (!isOwnerRole && !isFinanceManager(req.staff)) {
+        where.requestedById = req.staff?.id || -1;
+      }
+
+      const orders = await PurchaseOrder.findAll({
+        where,
+        order: [["createdAt", "DESC"]],
+        limit: 250,
+      });
+      const orderIds = orders.map((order) => order.id);
+
+      let messages = [];
+      if (orderIds.length) {
+        messages = await PurchaseOrderMessage.findAll({
+          where: {
+            orderId: { [Op.in]: orderIds },
+            ...(tenantId ? { tenantId } : {}),
+          },
+          order: [["createdAt", "ASC"]],
+        });
+      }
+
+      const messagesByOrder = new Map();
+      for (const msg of messages) {
+        const key = String(msg.orderId);
+        if (!messagesByOrder.has(key)) messagesByOrder.set(key, []);
+        messagesByOrder.get(key).push(msg);
+      }
+
+      const inbox = orders.map((order) => {
+        const key = String(order.id);
+        const thread = messagesByOrder.get(key) || [];
+        const lastMessage = thread.length ? thread[thread.length - 1] : null;
+        return {
+          ...order.toJSON(),
+          messageCount: thread.length,
+          lastMessage,
+          messages: thread,
+        };
+      });
+
+      return res.json({ ok: true, orders: inbox });
+    } catch (err) {
+      console.error("[PO] owner inbox error:", err);
+      return res.status(500).json({ ok: false, error: "Failed to load owner inbox" });
+    }
+  }
+);
 
 // GET messages for an order
 router.get(
@@ -405,6 +524,9 @@ router.post(
       if (order.status !== STATUS.PENDING) {
         return res.status(400).json({ ok: false, error: "Order is not pending" });
       }
+      if (req.staff?.role !== "owner" && order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
+        return res.status(403).json({ ok: false, error: "Forbidden" });
+      }
 
       const ownerBtcAddress =
         (req.body?.ownerBtcAddress || "").trim() || (await getOwnerAddress(order.tenantId));
@@ -414,11 +536,18 @@ router.post(
 
       order.ownerBtcAddress = ownerBtcAddress;
       order.status = STATUS.APPROVED;
+      order.ownerApprovedAt = new Date();
+      order.paymentConfirmedAt = null;
+      order.paymentWalletProvider = null;
+      order.ownerCreditedAt = null;
+      order.receiptCode = null;
+      order.receiptIssuedAt = null;
+      order.creditedAmountCents = null;
       await order.save();
 
       const message =
         (req.body?.note || "").trim() ||
-        `Owner shared wallet: ${ownerBtcAddress}`;
+        `Stage 2 verified by owner: BTC address shared (${ownerBtcAddress}). Tenant must send BTC via Wasabi wallet and submit confirmation.`;
       await addMessage({
         orderId: order.id,
         sender: req.staff?.username || "owner",
@@ -452,26 +581,36 @@ router.post(
       if (order.status !== STATUS.APPROVED) {
         return res.status(400).json({ ok: false, error: "Order not approved yet" });
       }
-      if (order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
+      if (req.staff?.role !== "owner" && order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
         return res.status(403).json({ ok: false, error: "Forbidden" });
       }
-      const isOwner = (req.staff?.permissions || []).includes(PERMISSIONS.FINANCE_WRITE);
-      const isRequester = order.requestedBy === (req.staff?.username || "");
-      if (!isOwner && !isRequester) {
-        return res.status(403).json({ ok: false, error: "Forbidden" });
+      if (!isRequester(order, req.staff)) {
+        return res.status(403).json({ ok: false, error: "Only the requesting tenant can confirm payment" });
       }
       const confirmationCode = (req.body?.confirmationCode || "").trim();
       if (!confirmationCode) {
         return res.status(400).json({ ok: false, error: "Confirmation required" });
       }
+      const walletProvider = normalizeWalletProvider(
+        req.body?.walletProvider || req.body?.paymentWalletProvider || req.body?.wallet || ""
+      );
+      if (walletProvider !== WALLET_PROVIDER_WASABI) {
+        return res.status(400).json({
+          ok: false,
+          error: "Payments must be sent via Wasabi wallet for this workflow",
+          requiredWalletProvider: WALLET_PROVIDER_WASABI,
+        });
+      }
 
       order.confirmationCode = confirmationCode;
+      order.paymentWalletProvider = WALLET_PROVIDER_WASABI;
+      order.paymentConfirmedAt = new Date();
       order.status = STATUS.AWAITING_CREDIT;
       await order.save();
 
       const body =
         (req.body?.note || "").trim() ||
-        `Payment sent. Confirmation: ${confirmationCode}`;
+        `Stage 3 verified by tenant: BTC sent via Wasabi. Confirmation: ${confirmationCode}.`;
       await addMessage({
         orderId: order.id,
         sender: req.staff?.username || "agent",
@@ -500,35 +639,165 @@ router.post(
   requirePermission(PERMISSIONS.FINANCE_WRITE),
   async (req, res) => {
     try {
-      const order = await PurchaseOrder.findByPk(req.params.id);
-      if (!order) return res.status(404).json({ ok: false, error: "Not found" });
-      if (order.status !== STATUS.AWAITING_CREDIT) {
-        return res.status(400).json({ ok: false, error: "Order not awaiting credit" });
-      }
-      if (order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
-        return res.status(403).json({ ok: false, error: "Forbidden" });
-      }
+      const result = await sequelize.transaction(async (t) => {
+        const order = await PurchaseOrder.findByPk(req.params.id, {
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+        if (!order) {
+          const err = new Error("NOT_FOUND");
+          err.status = 404;
+          throw err;
+        }
+        if (order.status !== STATUS.AWAITING_CREDIT) {
+          const err = new Error("ORDER_NOT_AWAITING_CREDIT");
+          err.status = 400;
+          throw err;
+        }
+        if (
+          req.staff?.role !== "owner" &&
+          order.tenantId &&
+          req.staff?.tenantId &&
+          order.tenantId !== req.staff.tenantId
+        ) {
+          const err = new Error("FORBIDDEN");
+          err.status = 403;
+          throw err;
+        }
+        if (normalizeWalletProvider(order.paymentWalletProvider) !== WALLET_PROVIDER_WASABI) {
+          const err = new Error("WALLET_PROVIDER_NOT_VERIFIED");
+          err.status = 400;
+          throw err;
+        }
+        if (!order.confirmationCode || !order.paymentConfirmedAt) {
+          const err = new Error("PAYMENT_NOT_CONFIRMED");
+          err.status = 400;
+          throw err;
+        }
 
-      order.status = STATUS.COMPLETED;
-      order.ownerCreditedAt = new Date();
-      await order.save();
+        const creditCents = toCents(order.funAmount);
+        if (!Number.isFinite(creditCents) || creditCents <= 0) {
+          const err = new Error("INVALID_FUN_AMOUNT");
+          err.status = 400;
+          throw err;
+        }
 
-      const body = (req.body?.note || "").trim() || "Funcoins credited.";
-      await addMessage({
-        orderId: order.id,
-        sender: req.staff?.username || "owner",
-        senderRole: req.staff?.role || "owner",
-        body,
-        tenantId: order.tenantId,
+        let wallet = await TenantWallet.findOne({
+          where: { tenantId: order.tenantId },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+        if (!wallet) {
+          wallet = await TenantWallet.create(
+            { tenantId: order.tenantId, balanceCents: 0, currency: "FUN" },
+            { transaction: t }
+          );
+        }
+        const walletBefore = Number(wallet.balanceCents || 0);
+        wallet.balanceCents = walletBefore + creditCents;
+        await wallet.save({ transaction: t });
+
+        await CreditLedger.create(
+          {
+            tenantId: order.tenantId,
+            actorUserId: req.staff?.id || null,
+            actionType: "purchase_order_credit",
+            amountCents: creditCents,
+            memo: `purchase_order:${order.id}`,
+          },
+          { transaction: t }
+        );
+
+        const now = new Date();
+        const receiptCode = buildReceiptCode(order.id, now);
+
+        order.status = STATUS.COMPLETED;
+        order.ownerCreditedAt = now;
+        order.creditedAmountCents = creditCents;
+        order.receiptCode = receiptCode;
+        order.receiptIssuedAt = now;
+        await order.save({ transaction: t });
+
+        const ownerNote = (req.body?.note || "").trim();
+        if (ownerNote) {
+          await addMessage({
+            orderId: order.id,
+            sender: req.staff?.username || "owner",
+            senderRole: req.staff?.role || "owner",
+            body: ownerNote,
+            tenantId: order.tenantId,
+            transaction: t,
+          });
+        }
+
+        await addMessage({
+          orderId: order.id,
+          sender: req.staff?.username || "owner",
+          senderRole: req.staff?.role || "owner",
+          body:
+            `Stage 4 verified by owner: payment received and account credited ${formatFunAmountFromCents(creditCents)} FUN. ` +
+            `Order marked paid. Receipt ${receiptCode}.`,
+          tenantId: order.tenantId,
+          transaction: t,
+        });
+
+        await addMessage({
+          orderId: order.id,
+          sender: "system",
+          senderRole: "system",
+          body:
+            `Auto payment receipt\n` +
+            `Receipt: ${receiptCode}\n` +
+            `Order: ${order.id}\n` +
+            `Tenant: ${order.tenantId}\n` +
+            `BTC confirmation: ${order.confirmationCode}\n` +
+            `Wallet provider: ${WALLET_PROVIDER_WASABI}\n` +
+            `FUN credited: ${formatFunAmountFromCents(creditCents)}\n` +
+            `Credited at: ${now.toISOString()}`,
+          tenantId: order.tenantId,
+          transaction: t,
+        });
+
+        return { order, wallet };
       });
 
       await notifyOrderStatusByEmail({
-        tenantId: order.tenantId,
-        order,
+        tenantId: result.order.tenantId,
+        order: result.order,
       });
 
-      res.json({ ok: true, order });
+      res.json({
+        ok: true,
+        order: result.order,
+        receipt: {
+          code: result.order.receiptCode,
+          issuedAt: result.order.receiptIssuedAt,
+          creditedAmountCents: Number(result.order.creditedAmountCents || 0),
+          creditedAmountFun: formatFunAmountFromCents(result.order.creditedAmountCents || 0),
+        },
+      });
     } catch (err) {
+      if (err?.message === "NOT_FOUND") {
+        return res.status(404).json({ ok: false, error: "Not found" });
+      }
+      if (err?.message === "ORDER_NOT_AWAITING_CREDIT") {
+        return res.status(400).json({ ok: false, error: "Order not awaiting credit" });
+      }
+      if (err?.message === "FORBIDDEN") {
+        return res.status(403).json({ ok: false, error: "Forbidden" });
+      }
+      if (err?.message === "WALLET_PROVIDER_NOT_VERIFIED") {
+        return res.status(400).json({
+          ok: false,
+          error: "Tenant confirmation must be from Wasabi wallet before crediting",
+        });
+      }
+      if (err?.message === "PAYMENT_NOT_CONFIRMED") {
+        return res.status(400).json({ ok: false, error: "Payment confirmation is missing" });
+      }
+      if (err?.message === "INVALID_FUN_AMOUNT") {
+        return res.status(400).json({ ok: false, error: "Invalid FUN amount on order" });
+      }
       console.error("[PO] mark-credited error:", err);
       res.status(500).json({ ok: false, error: "Failed to mark credited" });
     }
@@ -544,23 +813,23 @@ router.post(
     try {
       const order = await PurchaseOrder.findByPk(req.params.id);
       if (!order) return res.status(404).json({ ok: false, error: "Not found" });
-      const isOwner = (req.staff?.permissions || []).includes(PERMISSIONS.FINANCE_WRITE);
-      const isRequester = order.requestedBy === (req.staff?.username || "");
-      if (!isOwner && !isRequester) {
+      if (req.staff?.role !== "owner" && order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
         return res.status(403).json({ ok: false, error: "Forbidden" });
+      }
+      if (!isRequester(order, req.staff)) {
+        return res.status(403).json({ ok: false, error: "Only the requesting tenant can acknowledge this order" });
       }
       if (order.status !== STATUS.COMPLETED) {
         return res.status(400).json({ ok: false, error: "Order not completed yet" });
-      }
-      if (order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
-        return res.status(403).json({ ok: false, error: "Forbidden" });
       }
 
       order.status = STATUS.ACKNOWLEDGED;
       order.agentAcknowledgedAt = new Date();
       await order.save();
 
-      const body = (req.body?.note || "").trim() || "Agent confirmed credits received.";
+      const body =
+        (req.body?.note || "").trim() ||
+        "Requester acknowledged the credited balance and receipt.";
       await addMessage({
         orderId: order.id,
         sender: req.staff?.username || "agent",

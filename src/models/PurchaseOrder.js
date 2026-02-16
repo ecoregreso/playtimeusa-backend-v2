@@ -24,7 +24,7 @@ const PurchaseOrder = sequelize.define(
       allowNull: true,
     },
     status: {
-      // pending -> approved (wallet shared) -> awaiting_credit (agent sent BTC) -> completed (owner credited) -> acknowledged (agent confirmed)
+      // pending -> approved (owner shared BTC address) -> awaiting_credit (tenant confirmed Wasabi BTC send) -> completed (owner credited and receipt sent) -> acknowledged (optional tenant acknowledgement)
       type: DataTypes.STRING,
       allowNull: false,
       defaultValue: "pending",
@@ -36,6 +36,36 @@ const PurchaseOrder = sequelize.define(
     ownerCreditedAt: {
       type: DataTypes.DATE,
       allowNull: true,
+    },
+    ownerApprovedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "owner_approved_at",
+    },
+    paymentConfirmedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "payment_confirmed_at",
+    },
+    paymentWalletProvider: {
+      type: DataTypes.STRING(32),
+      allowNull: true,
+      field: "payment_wallet_provider",
+    },
+    creditedAmountCents: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+      field: "credited_amount_cents",
+    },
+    receiptCode: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+      field: "receipt_code",
+    },
+    receiptIssuedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "receipt_issued_at",
     },
     agentAcknowledgedAt: {
       type: DataTypes.DATE,
