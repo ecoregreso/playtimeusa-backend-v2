@@ -524,8 +524,11 @@ router.post(
       if (order.status !== STATUS.PENDING) {
         return res.status(400).json({ ok: false, error: "Order is not pending" });
       }
-      if (req.staff?.role !== "owner" && order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
-        return res.status(403).json({ ok: false, error: "Forbidden" });
+      if (req.staff?.role !== "owner") {
+        return res.status(403).json({
+          ok: false,
+          error: "Only owners can approve and send Stage 2 wallet instructions",
+        });
       }
 
       const ownerBtcAddress =
