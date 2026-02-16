@@ -279,14 +279,19 @@ router.post(
         return res.status(404).json({ ok: false, error: "Player not found" });
       }
 
-      const wallet = await getOrCreateWallet(player.id, req.staff?.tenantId || null);
+      const targetTenantId = player.tenantId || req.staff?.tenantId || req.auth?.tenantId || null;
+      if (!targetTenantId) {
+        return res.status(400).json({ ok: false, error: "Player tenant is required" });
+      }
+
+      const wallet = await getOrCreateWallet(player.id, targetTenantId);
       const before = Number(wallet.balance || 0);
       const after = before + amount;
       wallet.balance = after;
       await wallet.save();
 
       await Transaction.create({
-        tenantId: req.staff?.tenantId || null,
+        tenantId: targetTenantId,
         walletId: wallet.id,
         type: "manual_adjustment",
         amount,
