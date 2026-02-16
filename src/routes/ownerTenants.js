@@ -4,7 +4,7 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
-const { Op } = require("sequelize");
+const { Op, QueryTypes } = require("sequelize");
 
 const {
   Tenant,
@@ -12,6 +12,11 @@ const {
   TenantWallet,
   TenantVoucherPool,
   CreditLedger,
+  User,
+  Voucher,
+  GameRound,
+  Transaction,
+  PurchaseOrder,
   OwnerSetting,
   StaffUser,
   StaffMessage,
@@ -182,6 +187,102 @@ async function getSystemConfig() {
   merged.outcomeMode = normalizeOutcomeMode(merged.outcomeMode, DEFAULT_OUTCOME_MODE);
   merged.voucherWinCapPolicy = normalizeVoucherWinCapPolicy(merged.voucherWinCapPolicy);
   return merged;
+}
+
+const OWNER_ANALYTICS_DEFAULT_DAYS = 30;
+const OWNER_ANALYTICS_MAX_DAYS = 365;
+
+function parseDateInput(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return new Date(`${raw}T00:00:00.000Z`);
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function parseOwnerAnalyticsRange(query = {}) {
+  const rawDays = Number.parseInt(String(query.days || OWNER_ANALYTICS_DEFAULT_DAYS), 10);
+  const days = Number.isFinite(rawDays)
+    ? Math.min(Math.max(rawDays, 1), OWNER_ANALYTICS_MAX_DAYS)
+    : OWNER_ANALYTICS_DEFAULT_DAYS;
+
+  const fromInput = parseDateInput(query.from || query.start);
+  const toInput = parseDateInput(query.to || query.end);
+
+  let startDate = fromInput;
+  let endDate = toInput;
+
+  if (!startDate && !endDate) {
+    const now = new Date();
+    endDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    startDate = new Date(endDate);
+    startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
+  } else if (!startDate) {
+    startDate = new Date(endDate);
+    startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
+  } else if (!endDate) {
+    endDate = new Date(startDate);
+    endDate.setUTCDate(endDate.getUTCDate() + (days - 1));
+  }
+
+  if (startDate > endDate) {
+    const tmp = startDate;
+    startDate = endDate;
+    endDate = tmp;
+  }
+
+  const startUtc = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
+  const endUtc = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate()));
+  const endDateExclusive = new Date(endUtc);
+  endDateExclusive.setUTCDate(endDateExclusive.getUTCDate() + 1);
+
+  return {
+    startDate: startUtc,
+    endDate: endUtc,
+    endDateExclusive,
+    from: startUtc.toISOString(),
+    to: endUtc.toISOString(),
+    days,
+  };
+}
+
+function toNumeric(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function toMoney(cents) {
+  return Number((toNumeric(cents, 0) / 100).toFixed(2));
+}
+
+function dayKey(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+function buildDayBuckets(startDate, endDateExclusive) {
+  const out = [];
+  const cursor = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
+  while (cursor < endDateExclusive) {
+    out.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return out;
+}
+
+function indexByTenant(rows, key = "tenantId") {
+  const map = new Map();
+  for (const row of rows || []) {
+    const tenantId = row?.[key];
+    if (!tenantId) continue;
+    map.set(String(tenantId), row);
+  }
+  return map;
 }
 
 // --------------------
@@ -377,6 +478,635 @@ router.get(
     } catch (err) {
       console.error("[OWNER] tenants list error:", err);
       res.status(500).json({ ok: false, error: "Failed to load tenants" });
+    }
+  }
+);
+
+router.get(
+  "/analytics/tenants",
+  staffAuth,
+  requireOwner,
+  async (req, res) => {
+    try {
+      const range = parseOwnerAnalyticsRange(req.query || {});
+      const replacements = {
+        startDate: range.startDate,
+        endDateExclusive: range.endDateExclusive,
+      };
+
+      const [
+        tenants,
+        wallets,
+        pools,
+        totalPlayersRows,
+        roundsRows,
+        voucherRows,
+        orderRows,
+        cashflowRows,
+      ] = await Promise.all([
+        Tenant.findAll({
+          attributes: ["id", "name", "status"],
+          order: [["name", "ASC"]],
+        }),
+        TenantWallet.findAll({
+          attributes: ["tenantId", "balanceCents"],
+        }),
+        TenantVoucherPool.findAll({
+          attributes: ["tenantId", "poolBalanceCents"],
+        }),
+        sequelize.query(
+          `
+            SELECT tenant_id AS "tenantId", COUNT(*)::bigint AS "playersTotal"
+            FROM users
+            GROUP BY tenant_id
+          `,
+          { type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              tenant_id AS "tenantId",
+              COUNT(*)::bigint AS "roundsCount",
+              COUNT(DISTINCT "playerId")::bigint AS "activePlayers",
+              ROUND(COALESCE(SUM("betAmount"), 0) * 100)::bigint AS "wageredCents",
+              ROUND(COALESCE(SUM("winAmount"), 0) * 100)::bigint AS "wonCents"
+            FROM game_rounds
+            WHERE "createdAt" >= :startDate
+              AND "createdAt" < :endDateExclusive
+            GROUP BY tenant_id
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              tenant_id AS "tenantId",
+              SUM(CASE WHEN "createdAt" >= :startDate AND "createdAt" < :endDateExclusive THEN 1 ELSE 0 END)::bigint AS "issuedInRange",
+              SUM(CASE WHEN "redeemedAt" >= :startDate AND "redeemedAt" < :endDateExclusive THEN 1 ELSE 0 END)::bigint AS "redeemedInRange",
+              SUM(CASE WHEN status IN ('new', 'redeemed') THEN 1 ELSE 0 END)::bigint AS "activeVoucherCount"
+            FROM vouchers
+            GROUP BY tenant_id
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              tenant_id AS "tenantId",
+              COUNT(*)::bigint AS "ordersTotal",
+              SUM(CASE WHEN "createdAt" >= :startDate AND "createdAt" < :endDateExclusive THEN 1 ELSE 0 END)::bigint AS "ordersInRange",
+              SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END)::bigint AS "ordersPending",
+              SUM(CASE WHEN status IN ('completed', 'acknowledged') THEN 1 ELSE 0 END)::bigint AS "ordersCompleted",
+              ROUND(COALESCE(SUM(CASE WHEN "createdAt" >= :startDate AND "createdAt" < :endDateExclusive THEN "funAmount" ELSE 0 END), 0) * 100)::bigint AS "requestedFunCentsInRange",
+              COALESCE(SUM(CASE WHEN "createdAt" >= :startDate AND "createdAt" < :endDateExclusive THEN COALESCE("credited_amount_cents", 0) ELSE 0 END), 0)::bigint AS "creditedFunCentsInRange",
+              MAX("createdAt") AS "lastOrderAt"
+            FROM purchase_orders
+            GROUP BY tenant_id
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              tenant_id AS "tenantId",
+              ROUND(
+                SUM(
+                  CASE
+                    WHEN type IN ('credit', 'voucher_credit') THEN ABS(COALESCE(amount, 0))
+                    WHEN type = 'manual_adjustment' AND COALESCE(amount, 0) > 0 THEN ABS(COALESCE(amount, 0))
+                    ELSE 0
+                  END
+                ) * 100
+              )::bigint AS "depositsCents",
+              ROUND(
+                SUM(
+                  CASE
+                    WHEN type IN ('debit', 'voucher_debit') THEN ABS(COALESCE(amount, 0))
+                    WHEN type = 'manual_adjustment' AND COALESCE(amount, 0) < 0 THEN ABS(COALESCE(amount, 0))
+                    ELSE 0
+                  END
+                ) * 100
+              )::bigint AS "withdrawalsCents"
+            FROM transactions
+            WHERE "createdAt" >= :startDate
+              AND "createdAt" < :endDateExclusive
+            GROUP BY tenant_id
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const walletByTenant = new Map(
+        wallets.map((row) => [String(row.tenantId), toNumeric(row.balanceCents)])
+      );
+      const poolByTenant = new Map(
+        pools.map((row) => [String(row.tenantId), toNumeric(row.poolBalanceCents)])
+      );
+      const totalPlayersByTenant = indexByTenant(totalPlayersRows);
+      const roundsByTenant = indexByTenant(roundsRows);
+      const vouchersByTenant = indexByTenant(voucherRows);
+      const ordersByTenant = indexByTenant(orderRows);
+      const cashByTenant = indexByTenant(cashflowRows);
+
+      const tenantRows = tenants.map((tenant) => {
+        const tenantId = String(tenant.id);
+        const totalPlayers = totalPlayersByTenant.get(tenantId) || {};
+        const rounds = roundsByTenant.get(tenantId) || {};
+        const vouchers = vouchersByTenant.get(tenantId) || {};
+        const orders = ordersByTenant.get(tenantId) || {};
+        const cash = cashByTenant.get(tenantId) || {};
+
+        const wageredCents = toNumeric(rounds.wageredCents);
+        const wonCents = toNumeric(rounds.wonCents);
+        const ngrCents = wageredCents - wonCents;
+        const depositsCents = toNumeric(cash.depositsCents);
+        const withdrawalsCents = toNumeric(cash.withdrawalsCents);
+
+        return {
+          tenantId,
+          tenantName: tenant.name,
+          status: tenant.status,
+          playersTotal: toNumeric(totalPlayers.playersTotal),
+          activePlayers: toNumeric(rounds.activePlayers),
+          roundsCount: toNumeric(rounds.roundsCount),
+          vouchersIssuedInRange: toNumeric(vouchers.issuedInRange),
+          vouchersRedeemedInRange: toNumeric(vouchers.redeemedInRange),
+          activeVoucherCount: toNumeric(vouchers.activeVoucherCount),
+          walletBalanceCents: toNumeric(walletByTenant.get(tenantId)),
+          poolBalanceCents: toNumeric(poolByTenant.get(tenantId)),
+          wageredCents,
+          wonCents,
+          ngrCents,
+          depositsCents,
+          withdrawalsCents,
+          ordersTotal: toNumeric(orders.ordersTotal),
+          ordersInRange: toNumeric(orders.ordersInRange),
+          ordersPending: toNumeric(orders.ordersPending),
+          ordersCompleted: toNumeric(orders.ordersCompleted),
+          requestedFunCentsInRange: toNumeric(orders.requestedFunCentsInRange),
+          creditedFunCentsInRange: toNumeric(orders.creditedFunCentsInRange),
+          lastOrderAt: orders.lastOrderAt || null,
+          money: {
+            walletFun: toMoney(walletByTenant.get(tenantId)),
+            poolFun: toMoney(poolByTenant.get(tenantId)),
+            wageredFun: toMoney(wageredCents),
+            wonFun: toMoney(wonCents),
+            ngrFun: toMoney(ngrCents),
+            depositsFun: toMoney(depositsCents),
+            withdrawalsFun: toMoney(withdrawalsCents),
+            requestedFunInRange: toMoney(orders.requestedFunCentsInRange),
+            creditedFunInRange: toMoney(orders.creditedFunCentsInRange),
+          },
+        };
+      });
+
+      tenantRows.sort((a, b) => b.ngrCents - a.ngrCents);
+
+      const charts = {
+        ngrByTenant: tenantRows.map((row) => ({
+          tenantId: row.tenantId,
+          tenantName: row.tenantName,
+          ngrCents: row.ngrCents,
+          ngrFun: row.money.ngrFun,
+        })),
+        ordersByTenant: tenantRows.map((row) => ({
+          tenantId: row.tenantId,
+          tenantName: row.tenantName,
+          ordersInRange: row.ordersInRange,
+          ordersCompleted: row.ordersCompleted,
+        })),
+        walletByTenant: tenantRows.map((row) => ({
+          tenantId: row.tenantId,
+          tenantName: row.tenantName,
+          walletBalanceCents: row.walletBalanceCents,
+          walletFun: row.money.walletFun,
+        })),
+      };
+
+      return res.json({
+        ok: true,
+        range: {
+          from: range.from,
+          to: range.to,
+          days: range.days,
+        },
+        tenants: tenantRows,
+        charts,
+      });
+    } catch (err) {
+      console.error("[OWNER] tenant analytics summary error:", err);
+      return res.status(500).json({ ok: false, error: "Failed to load tenant analytics summary" });
+    }
+  }
+);
+
+router.get(
+  "/analytics/tenants/:tenantId",
+  staffAuth,
+  requireOwner,
+  async (req, res) => {
+    try {
+      const tenantId = String(req.params.tenantId || "").trim();
+      if (!tenantId) {
+        return res.status(400).json({ ok: false, error: "tenantId is required" });
+      }
+
+      const tenant = await Tenant.findByPk(tenantId, {
+        attributes: ["id", "name", "status", "createdAt"],
+      });
+      if (!tenant) {
+        return res.status(404).json({ ok: false, error: "Tenant not found" });
+      }
+
+      const range = parseOwnerAnalyticsRange(req.query || {});
+      const replacements = {
+        tenantId,
+        startDate: range.startDate,
+        endDateExclusive: range.endDateExclusive,
+      };
+      const orderLimitRaw = Number.parseInt(String(req.query.orderLimit || "200"), 10);
+      const orderLimit = Number.isFinite(orderLimitRaw)
+        ? Math.min(Math.max(orderLimitRaw, 20), 500)
+        : 200;
+
+      const [
+        wallet,
+        pool,
+        playersRow,
+        roundsRow,
+        vouchersRow,
+        ordersRow,
+        cashRow,
+        dailyRevenueRows,
+        dailyOrdersRows,
+        dailyCashRows,
+        topGamesRows,
+        actionRows,
+        orderHistoryRows,
+      ] = await Promise.all([
+        TenantWallet.findOne({ where: { tenantId }, attributes: ["tenantId", "balanceCents"] }),
+        TenantVoucherPool.findOne({ where: { tenantId }, attributes: ["tenantId", "poolBalanceCents"] }),
+        sequelize.query(
+          `
+            SELECT COUNT(*)::bigint AS "playersTotal"
+            FROM users
+            WHERE tenant_id = :tenantId
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              COUNT(*)::bigint AS "roundsCount",
+              COUNT(DISTINCT "playerId")::bigint AS "activePlayers",
+              ROUND(COALESCE(SUM("betAmount"), 0) * 100)::bigint AS "wageredCents",
+              ROUND(COALESCE(SUM("winAmount"), 0) * 100)::bigint AS "wonCents"
+            FROM game_rounds
+            WHERE tenant_id = :tenantId
+              AND "createdAt" >= :startDate
+              AND "createdAt" < :endDateExclusive
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              SUM(CASE WHEN "createdAt" >= :startDate AND "createdAt" < :endDateExclusive THEN 1 ELSE 0 END)::bigint AS "issuedInRange",
+              SUM(CASE WHEN "redeemedAt" >= :startDate AND "redeemedAt" < :endDateExclusive THEN 1 ELSE 0 END)::bigint AS "redeemedInRange",
+              SUM(CASE WHEN status IN ('new', 'redeemed') THEN 1 ELSE 0 END)::bigint AS "activeVoucherCount"
+            FROM vouchers
+            WHERE tenant_id = :tenantId
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              COUNT(*)::bigint AS "ordersTotal",
+              SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END)::bigint AS "ordersPending",
+              SUM(CASE WHEN status IN ('completed', 'acknowledged') THEN 1 ELSE 0 END)::bigint AS "ordersCompleted",
+              ROUND(COALESCE(SUM(CASE WHEN "createdAt" >= :startDate AND "createdAt" < :endDateExclusive THEN "funAmount" ELSE 0 END), 0) * 100)::bigint AS "requestedFunCentsInRange",
+              COALESCE(SUM(CASE WHEN "createdAt" >= :startDate AND "createdAt" < :endDateExclusive THEN COALESCE("credited_amount_cents", 0) ELSE 0 END), 0)::bigint AS "creditedFunCentsInRange"
+            FROM purchase_orders
+            WHERE tenant_id = :tenantId
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              ROUND(
+                SUM(
+                  CASE
+                    WHEN type IN ('credit', 'voucher_credit') THEN ABS(COALESCE(amount, 0))
+                    WHEN type = 'manual_adjustment' AND COALESCE(amount, 0) > 0 THEN ABS(COALESCE(amount, 0))
+                    ELSE 0
+                  END
+                ) * 100
+              )::bigint AS "depositsCents",
+              ROUND(
+                SUM(
+                  CASE
+                    WHEN type IN ('debit', 'voucher_debit') THEN ABS(COALESCE(amount, 0))
+                    WHEN type = 'manual_adjustment' AND COALESCE(amount, 0) < 0 THEN ABS(COALESCE(amount, 0))
+                    ELSE 0
+                  END
+                ) * 100
+              )::bigint AS "withdrawalsCents"
+            FROM transactions
+            WHERE tenant_id = :tenantId
+              AND "createdAt" >= :startDate
+              AND "createdAt" < :endDateExclusive
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              DATE_TRUNC('day', "createdAt") AS "day",
+              COUNT(*)::bigint AS "roundsCount",
+              ROUND(COALESCE(SUM("betAmount"), 0) * 100)::bigint AS "wageredCents",
+              ROUND(COALESCE(SUM("winAmount"), 0) * 100)::bigint AS "wonCents"
+            FROM game_rounds
+            WHERE tenant_id = :tenantId
+              AND "createdAt" >= :startDate
+              AND "createdAt" < :endDateExclusive
+            GROUP BY "day"
+            ORDER BY "day" ASC
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              DATE_TRUNC('day', "createdAt") AS "day",
+              COUNT(*)::bigint AS "ordersCount",
+              SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END)::bigint AS "pendingCount",
+              SUM(CASE WHEN status IN ('completed', 'acknowledged') THEN 1 ELSE 0 END)::bigint AS "completedCount",
+              ROUND(COALESCE(SUM("funAmount"), 0) * 100)::bigint AS "requestedFunCents",
+              COALESCE(SUM(COALESCE("credited_amount_cents", 0)), 0)::bigint AS "creditedFunCents"
+            FROM purchase_orders
+            WHERE tenant_id = :tenantId
+              AND "createdAt" >= :startDate
+              AND "createdAt" < :endDateExclusive
+            GROUP BY "day"
+            ORDER BY "day" ASC
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              DATE_TRUNC('day', "createdAt") AS "day",
+              ROUND(
+                SUM(
+                  CASE
+                    WHEN type IN ('credit', 'voucher_credit') THEN ABS(COALESCE(amount, 0))
+                    WHEN type = 'manual_adjustment' AND COALESCE(amount, 0) > 0 THEN ABS(COALESCE(amount, 0))
+                    ELSE 0
+                  END
+                ) * 100
+              )::bigint AS "depositsCents",
+              ROUND(
+                SUM(
+                  CASE
+                    WHEN type IN ('debit', 'voucher_debit') THEN ABS(COALESCE(amount, 0))
+                    WHEN type = 'manual_adjustment' AND COALESCE(amount, 0) < 0 THEN ABS(COALESCE(amount, 0))
+                    ELSE 0
+                  END
+                ) * 100
+              )::bigint AS "withdrawalsCents"
+            FROM transactions
+            WHERE tenant_id = :tenantId
+              AND "createdAt" >= :startDate
+              AND "createdAt" < :endDateExclusive
+            GROUP BY "day"
+            ORDER BY "day" ASC
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              "gameId" AS "gameId",
+              COUNT(*)::bigint AS "roundsCount",
+              ROUND(COALESCE(SUM("betAmount"), 0) * 100)::bigint AS "wageredCents",
+              ROUND(COALESCE(SUM("winAmount"), 0) * 100)::bigint AS "wonCents"
+            FROM game_rounds
+            WHERE tenant_id = :tenantId
+              AND "createdAt" >= :startDate
+              AND "createdAt" < :endDateExclusive
+            GROUP BY "gameId"
+            ORDER BY "roundsCount" DESC
+            LIMIT 15
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+          `
+            SELECT
+              action_type AS "actionType",
+              COUNT(*)::bigint AS "entriesCount",
+              COALESCE(SUM(amount_cents), 0)::bigint AS "totalCents"
+            FROM credit_ledger
+            WHERE tenant_id = :tenantId
+              AND "createdAt" >= :startDate
+              AND "createdAt" < :endDateExclusive
+            GROUP BY action_type
+            ORDER BY ABS(COALESCE(SUM(amount_cents), 0)) DESC
+          `,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        PurchaseOrder.findAll({
+          where: { tenantId },
+          order: [["createdAt", "DESC"]],
+          limit: orderLimit,
+        }),
+      ]);
+
+      const players = playersRow?.[0] || {};
+      const rounds = roundsRow?.[0] || {};
+      const vouchers = vouchersRow?.[0] || {};
+      const orders = ordersRow?.[0] || {};
+      const cash = cashRow?.[0] || {};
+
+      const days = buildDayBuckets(range.startDate, range.endDateExclusive);
+
+      const revenueByDay = new Map();
+      for (const row of dailyRevenueRows || []) {
+        const key = dayKey(row.day);
+        if (!key) continue;
+        revenueByDay.set(key, row);
+      }
+      const ordersByDay = new Map();
+      for (const row of dailyOrdersRows || []) {
+        const key = dayKey(row.day);
+        if (!key) continue;
+        ordersByDay.set(key, row);
+      }
+      const cashByDay = new Map();
+      for (const row of dailyCashRows || []) {
+        const key = dayKey(row.day);
+        if (!key) continue;
+        cashByDay.set(key, row);
+      }
+
+      const dailyRevenue = days.map((day) => {
+        const row = revenueByDay.get(day) || {};
+        const wageredCents = toNumeric(row.wageredCents);
+        const wonCents = toNumeric(row.wonCents);
+        const ngrCents = wageredCents - wonCents;
+        return {
+          day,
+          roundsCount: toNumeric(row.roundsCount),
+          wageredCents,
+          wonCents,
+          ngrCents,
+          wageredFun: toMoney(wageredCents),
+          wonFun: toMoney(wonCents),
+          ngrFun: toMoney(ngrCents),
+        };
+      });
+
+      const dailyOrders = days.map((day) => {
+        const row = ordersByDay.get(day) || {};
+        const requestedFunCents = toNumeric(row.requestedFunCents);
+        const creditedFunCents = toNumeric(row.creditedFunCents);
+        return {
+          day,
+          ordersCount: toNumeric(row.ordersCount),
+          pendingCount: toNumeric(row.pendingCount),
+          completedCount: toNumeric(row.completedCount),
+          requestedFunCents,
+          creditedFunCents,
+          requestedFun: toMoney(requestedFunCents),
+          creditedFun: toMoney(creditedFunCents),
+        };
+      });
+
+      const dailyCashflow = days.map((day) => {
+        const row = cashByDay.get(day) || {};
+        const depositsCents = toNumeric(row.depositsCents);
+        const withdrawalsCents = toNumeric(row.withdrawalsCents);
+        const netCents = depositsCents - withdrawalsCents;
+        return {
+          day,
+          depositsCents,
+          withdrawalsCents,
+          netCents,
+          depositsFun: toMoney(depositsCents),
+          withdrawalsFun: toMoney(withdrawalsCents),
+          netFun: toMoney(netCents),
+        };
+      });
+
+      const topGames = (topGamesRows || []).map((row) => {
+        const wageredCents = toNumeric(row.wageredCents);
+        const wonCents = toNumeric(row.wonCents);
+        const ngrCents = wageredCents - wonCents;
+        return {
+          gameId: row.gameId || "unknown",
+          roundsCount: toNumeric(row.roundsCount),
+          wageredCents,
+          wonCents,
+          ngrCents,
+          wageredFun: toMoney(wageredCents),
+          wonFun: toMoney(wonCents),
+          ngrFun: toMoney(ngrCents),
+        };
+      });
+
+      const actionBreakdown = (actionRows || []).map((row) => ({
+        actionType: row.actionType || "unknown",
+        entriesCount: toNumeric(row.entriesCount),
+        totalCents: toNumeric(row.totalCents),
+        totalFun: toMoney(row.totalCents),
+      }));
+
+      const orderHistory = (orderHistoryRows || []).map((order) => ({
+        id: order.id,
+        status: order.status,
+        requestedBy: order.requestedBy,
+        requestedById: order.requestedById,
+        funAmount: toNumeric(order.funAmount),
+        btcAmount: toNumeric(order.btcAmount),
+        btcRate: toNumeric(order.btcRate, null),
+        ownerBtcAddress: order.ownerBtcAddress || null,
+        paymentWalletProvider: order.paymentWalletProvider || null,
+        confirmationCode: order.confirmationCode || null,
+        receiptCode: order.receiptCode || null,
+        creditedAmountCents: toNumeric(order.creditedAmountCents),
+        creditedAmountFun: toMoney(order.creditedAmountCents),
+        ownerApprovedAt: order.ownerApprovedAt || null,
+        paymentConfirmedAt: order.paymentConfirmedAt || null,
+        ownerCreditedAt: order.ownerCreditedAt || null,
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
+      }));
+
+      const wageredCents = toNumeric(rounds.wageredCents);
+      const wonCents = toNumeric(rounds.wonCents);
+      const ngrCents = wageredCents - wonCents;
+      const depositsCents = toNumeric(cash.depositsCents);
+      const withdrawalsCents = toNumeric(cash.withdrawalsCents);
+      const requestedFunCentsInRange = toNumeric(orders.requestedFunCentsInRange);
+      const creditedFunCentsInRange = toNumeric(orders.creditedFunCentsInRange);
+
+      return res.json({
+        ok: true,
+        tenant: tenant.toJSON(),
+        range: {
+          from: range.from,
+          to: range.to,
+          days: range.days,
+        },
+        kpis: {
+          playersTotal: toNumeric(players.playersTotal),
+          activePlayers: toNumeric(rounds.activePlayers),
+          roundsCount: toNumeric(rounds.roundsCount),
+          vouchersIssuedInRange: toNumeric(vouchers.issuedInRange),
+          vouchersRedeemedInRange: toNumeric(vouchers.redeemedInRange),
+          activeVoucherCount: toNumeric(vouchers.activeVoucherCount),
+          walletBalanceCents: toNumeric(wallet?.balanceCents),
+          poolBalanceCents: toNumeric(pool?.poolBalanceCents),
+          wageredCents,
+          wonCents,
+          ngrCents,
+          depositsCents,
+          withdrawalsCents,
+          netCashflowCents: depositsCents - withdrawalsCents,
+          ordersTotal: toNumeric(orders.ordersTotal),
+          ordersPending: toNumeric(orders.ordersPending),
+          ordersCompleted: toNumeric(orders.ordersCompleted),
+          requestedFunCentsInRange,
+          creditedFunCentsInRange,
+          money: {
+            walletFun: toMoney(wallet?.balanceCents),
+            poolFun: toMoney(pool?.poolBalanceCents),
+            wageredFun: toMoney(wageredCents),
+            wonFun: toMoney(wonCents),
+            ngrFun: toMoney(ngrCents),
+            depositsFun: toMoney(depositsCents),
+            withdrawalsFun: toMoney(withdrawalsCents),
+            netCashflowFun: toMoney(depositsCents - withdrawalsCents),
+            requestedFunInRange: toMoney(requestedFunCentsInRange),
+            creditedFunInRange: toMoney(creditedFunCentsInRange),
+          },
+        },
+        series: {
+          dailyRevenue,
+          dailyOrders,
+          dailyCashflow,
+        },
+        datasets: {
+          topGames,
+          actionBreakdown,
+          orderHistory,
+        },
+      });
+    } catch (err) {
+      console.error("[OWNER] tenant analytics detail error:", err);
+      return res.status(500).json({ ok: false, error: "Failed to load tenant analytics detail" });
     }
   }
 );

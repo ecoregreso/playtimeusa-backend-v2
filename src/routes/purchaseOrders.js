@@ -684,6 +684,20 @@ router.post(
           err.status = 400;
           throw err;
         }
+        const requestedCreditCents =
+          req.body?.creditedAmountCents != null
+            ? Number(req.body.creditedAmountCents)
+            : req.body?.creditedAmountFun != null
+            ? toCents(req.body.creditedAmountFun)
+            : null;
+        if (
+          requestedCreditCents != null &&
+          (Number.isNaN(requestedCreditCents) || Number(requestedCreditCents) !== Number(creditCents))
+        ) {
+          const err = new Error("CREDIT_AMOUNT_MISMATCH");
+          err.status = 400;
+          throw err;
+        }
 
         let wallet = await TenantWallet.findOne({
           where: { tenantId: order.tenantId },
@@ -697,10 +711,16 @@ router.post(
           );
         }
         const walletBefore = Number(wallet.balanceCents || 0);
-        wallet.balanceCents = walletBefore + creditCents;
+        const walletAfter = walletBefore + creditCents;
+        if (walletAfter - walletBefore !== creditCents) {
+          const err = new Error("CREDIT_AMOUNT_MISMATCH");
+          err.status = 400;
+          throw err;
+        }
+        wallet.balanceCents = walletAfter;
         await wallet.save({ transaction: t });
 
-        await CreditLedger.create(
+        const creditLedger = await CreditLedger.create(
           {
             tenantId: order.tenantId,
             actorUserId: req.staff?.id || null,
@@ -710,6 +730,11 @@ router.post(
           },
           { transaction: t }
         );
+        if (Number(creditLedger.amountCents || 0) !== Number(creditCents)) {
+          const err = new Error("CREDIT_AMOUNT_MISMATCH");
+          err.status = 400;
+          throw err;
+        }
 
         const now = new Date();
         const receiptCode = buildReceiptCode(order.id, now);
@@ -806,6 +831,12 @@ router.post(
       }
       if (err?.message === "INVALID_FUN_AMOUNT") {
         return res.status(400).json({ ok: false, error: "Invalid FUN amount on order" });
+      }
+      if (err?.message === "CREDIT_AMOUNT_MISMATCH") {
+        return res.status(400).json({
+          ok: false,
+          error: "Credited amount must exactly match the tenant requested FUN amount",
+        });
       }
       console.error("[PO] mark-credited error:", err);
       res.status(500).json({ ok: false, error: "Failed to mark credited" });
