@@ -662,13 +662,8 @@ router.post(
           err.status = 400;
           throw err;
         }
-        if (
-          req.staff?.role !== "owner" &&
-          order.tenantId &&
-          req.staff?.tenantId &&
-          order.tenantId !== req.staff.tenantId
-        ) {
-          const err = new Error("FORBIDDEN");
+        if (req.staff?.role !== "owner") {
+          const err = new Error("OWNER_ONLY");
           err.status = 403;
           throw err;
         }
@@ -793,6 +788,12 @@ router.post(
       }
       if (err?.message === "FORBIDDEN") {
         return res.status(403).json({ ok: false, error: "Forbidden" });
+      }
+      if (err?.message === "OWNER_ONLY") {
+        return res.status(403).json({
+          ok: false,
+          error: "Only owners can complete Stage 4 payout and crediting",
+        });
       }
       if (err?.message === "WALLET_PROVIDER_NOT_VERIFIED") {
         return res.status(400).json({
