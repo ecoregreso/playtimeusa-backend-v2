@@ -69,6 +69,36 @@ function toDay(value) {
   return date.toISOString().slice(0, 10);
 }
 
+function toHour(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setUTCMinutes(0, 0, 0);
+  return date.toISOString();
+}
+
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function normalizeStaffId(value) {
+  const id = Number(value);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function extractGameIdFromTransaction(tx) {
+  const metadata = asObject(tx?.metadata);
+  if (metadata.gameId != null && metadata.gameId !== "") {
+    return String(metadata.gameId);
+  }
+  const reference = typeof tx?.reference === "string" ? tx.reference : "";
+  const gameRefMatch = reference.match(/^game:([^:]+)$/i);
+  if (gameRefMatch && gameRefMatch[1]) {
+    return gameRefMatch[1];
+  }
+  return null;
+}
+
 function addDays(day, offset) {
   if (!day) return null;
   const date = new Date(day + "T00:00:00.000Z");
@@ -652,7 +682,7 @@ router.get(
     );
 
     try {
-      const [players, sessionsActivity, sessionsForLength, betTx] = await Promise.all([
+      const [players, sessionsActivity, sessionsForLength, betTx, activityBetRows] = await Promise.all([
         User.findAll({
           where: {
             role: "player",
@@ -665,7 +695,7 @@ router.get(
         }),
         Session.findAll({
           where: {
-            actorType: "user",
+            actorType: { [Op.in]: ["user", "player"] },
             lastSeenAt: {
               [Op.gte]: activityStart,
               [Op.lt]: activityEnd,
@@ -675,7 +705,7 @@ router.get(
         }),
         Session.findAll({
           where: {
-            actorType: "user",
+            actorType: { [Op.in]: ["user", "player"] },
             createdAt: {
               [Op.gte]: startDate,
               [Op.lt]: endDateExclusive,
@@ -693,6 +723,21 @@ router.get(
           },
           attributes: ["amount"],
         }),
+        Transaction.findAll({
+          where: {
+            type: "game_bet",
+            createdAt: {
+              [Op.gte]: activityStart,
+              [Op.lt]: activityEnd,
+            },
+            createdByUserId: { [Op.not]: null },
+          },
+          attributes: [
+            [literal(`DATE("createdAt")`), "day"],
+            ["createdByUserId", "playerId"],
+          ],
+          group: [literal(`DATE("createdAt")`), "createdByUserId"],
+        }),
       ]);
 
       const sessionDaySets = Object.fromEntries(
@@ -705,6 +750,14 @@ router.get(
         const userId = session.userId;
         if (userId != null) {
           sessionDaySets[day].add(String(userId));
+        }
+      }
+      for (const row of activityBetRows) {
+        const day = toDay(row.get("day"));
+        if (!day || !sessionDaySets[day]) continue;
+        const playerId = row.get("playerId") || row.playerId;
+        if (playerId != null) {
+          sessionDaySets[day].add(String(playerId));
         }
       }
 
@@ -750,7 +803,7 @@ router.get(
         return (retained / cohort.size) * 100;
       };
 
-      const retentionDays = rangeDays.map((day) => {
+      let retentionDays = rangeDays.map((day) => {
         const cohort = cohorts[day];
         if (!cohort || !cohort.size) {
           return { day, d1: null, d7: null, d30: null, cohort: 0 };
@@ -764,8 +817,43 @@ router.get(
         };
       });
 
+      // Fallback when no players were created in range: cohort by first observed activity day.
+      if (!retentionDays.some((entry) => Number(entry.cohort || 0) > 0)) {
+        const firstSeenByPlayer = new Map();
+        for (const day of rangeDays) {
+          const users = sessionDaySets[day];
+          if (!users || !users.size) continue;
+          for (const playerId of users) {
+            if (!firstSeenByPlayer.has(playerId)) {
+              firstSeenByPlayer.set(playerId, day);
+            }
+          }
+        }
+
+        const activityCohorts = {};
+        for (const [playerId, day] of firstSeenByPlayer.entries()) {
+          if (!activityCohorts[day]) activityCohorts[day] = new Set();
+          activityCohorts[day].add(String(playerId));
+        }
+
+        retentionDays = rangeDays.map((day) => {
+          const cohort = activityCohorts[day];
+          if (!cohort || !cohort.size) {
+            return { day, d1: null, d7: null, d30: null, cohort: 0 };
+          }
+          return {
+            day,
+            d1: retentionForOffset(day, cohort, 1),
+            d7: retentionForOffset(day, cohort, 7),
+            d30: retentionForOffset(day, cohort, 30),
+            cohort: cohort.size,
+          };
+        });
+      }
+
       const sessionLengths = [];
-      for (const session of sessionsForLength) {
+      const sessionLengthSource = (sessionsForLength || []).length ? sessionsForLength : sessionsActivity;
+      for (const session of sessionLengthSource) {
         const createdAt = new Date(session.createdAt);
         const lastSeen = new Date(session.lastSeenAt || session.createdAt);
         if (Number.isNaN(createdAt.getTime()) || Number.isNaN(lastSeen.getTime())) {
@@ -820,10 +908,13 @@ router.get(
     try {
       const [
         playerAgg,
+        txPlayerAggRows,
         voucherAgg,
         sessionRows,
         dailyRows,
         hourlyRows,
+        sessionDailyRows,
+        sessionHourlyRows,
       ] = await Promise.all([
         GameRound.findAll({
           where: {
@@ -840,9 +931,25 @@ router.get(
           ],
           group: ["playerId"],
         }),
+        Transaction.findAll({
+          where: {
+            type: { [Op.in]: ["game_bet", "game_win"] },
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+            createdByUserId: { [Op.not]: null },
+          },
+          attributes: [
+            ["createdByUserId", "playerId"],
+            "type",
+            [fn("COUNT", literal("*")), "events"],
+            [fn("SUM", col("amount")), "totalAmount"],
+          ],
+          group: ["createdByUserId", "type"],
+        }),
         Voucher.findAll({
           where: {
-            status: "redeemed",
             redeemedByUserId: { [Op.not]: null },
             redeemedAt: {
               [Op.gte]: startDate,
@@ -859,7 +966,7 @@ router.get(
         }),
         Session.findAll({
           where: {
-            actorType: "user",
+            actorType: { [Op.in]: ["user", "player"] },
             lastSeenAt: {
               [Op.gte]: startDate,
               [Op.lt]: endDateExclusive,
@@ -897,32 +1004,94 @@ router.get(
           group: [literal(`DATE_TRUNC('hour', "createdAt")`)],
           order: [[literal(`DATE_TRUNC('hour', "createdAt")`), "ASC"]],
         }),
+        Session.findAll({
+          where: {
+            actorType: { [Op.in]: ["user", "player"] },
+            lastSeenAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            [literal(`DATE("lastSeenAt")`), "day"],
+            [literal(`COUNT(DISTINCT "userId")`), "count"],
+          ],
+          group: [literal(`DATE("lastSeenAt")`)],
+          order: [[literal(`DATE("lastSeenAt")`), "ASC"]],
+        }),
+        Session.findAll({
+          where: {
+            actorType: { [Op.in]: ["user", "player"] },
+            lastSeenAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: [
+            [literal(`DATE_TRUNC('hour', "lastSeenAt")`), "hour"],
+            [literal(`COUNT(DISTINCT "userId")`), "count"],
+          ],
+          group: [literal(`DATE_TRUNC('hour', "lastSeenAt")`)],
+          order: [[literal(`DATE_TRUNC('hour', "lastSeenAt")`), "ASC"]],
+        }),
       ]);
 
       let totalBetAll = 0;
       let totalWinAll = 0;
       const betByPlayer = new Map();
 
-      const winRatePlayers = playerAgg.map((row) => {
+      let winRatePlayers = playerAgg.map((row) => {
         const playerId = row.get("playerId");
         const rounds = Number(row.get("rounds") || 0);
         const totalBet = Number(row.get("totalBet") || 0);
         const totalWin = Number(row.get("totalWin") || 0);
-        totalBetAll += totalBet;
-        totalWinAll += totalWin;
-        betByPlayer.set(String(playerId), totalBet);
         return { playerId, rounds, totalBet, totalWin };
       });
+
+      // Fallback for games that do not persist GameRound rows consistently.
+      if (!winRatePlayers.length && (txPlayerAggRows || []).length) {
+        const txByPlayer = new Map();
+        for (const row of txPlayerAggRows) {
+          const playerId = row.get("playerId") || row.playerId;
+          if (!playerId) continue;
+          const type = row.get("type") || row.type;
+          const events = Number(row.get("events") || 0);
+          const totalAmount = Math.abs(Number(row.get("totalAmount") || 0));
+          const existing = txByPlayer.get(String(playerId)) || {
+            playerId: String(playerId),
+            rounds: 0,
+            totalBet: 0,
+            totalWin: 0,
+          };
+          if (type === "game_bet") {
+            existing.rounds += events;
+            existing.totalBet += totalAmount;
+          } else if (type === "game_win") {
+            existing.totalWin += totalAmount;
+          }
+          txByPlayer.set(String(playerId), existing);
+        }
+        winRatePlayers = Array.from(txByPlayer.values());
+      }
+
+      for (const player of winRatePlayers) {
+        totalBetAll += Number(player.totalBet || 0);
+        totalWinAll += Number(player.totalWin || 0);
+        if (player.playerId != null) {
+          betByPlayer.set(String(player.playerId), Number(player.totalBet || 0));
+        }
+      }
 
       const baselineRtp = totalBetAll > 0 ? totalWinAll / totalBetAll : 0;
 
       const winRateOutliers = winRatePlayers
-        .filter(
-          (p) => p.totalBet >= WIN_RATE_MIN_BET && p.rounds >= WIN_RATE_MIN_ROUNDS
-        )
+        .filter((p) => Number(p.totalBet || 0) > 0 && Number(p.rounds || 0) > 0)
         .map((p) => {
           const rtp = p.totalBet > 0 ? p.totalWin / p.totalBet : 0;
           const deviation = rtp - baselineRtp;
+          const eligible =
+            Number(p.totalBet || 0) >= WIN_RATE_MIN_BET &&
+            Number(p.rounds || 0) >= WIN_RATE_MIN_ROUNDS;
           return {
             playerId: p.playerId,
             rounds: p.rounds,
@@ -930,7 +1099,8 @@ router.get(
             totalWin: p.totalWin,
             rtp,
             deviation,
-            isOutlier: Math.abs(deviation) >= WIN_RATE_DEVIATION_THRESHOLD,
+            eligible,
+            isOutlier: eligible && Math.abs(deviation) >= WIN_RATE_DEVIATION_THRESHOLD,
           };
         });
 
@@ -988,23 +1158,38 @@ router.get(
 
       const dailyMap = {};
       for (const row of dailyRows) {
-        const day = row.get("day");
+        const day = toDay(row.get("day"));
+        if (!day) continue;
         dailyMap[day] = Number(row.get("count") || 0);
       }
+      const sessionDailyMap = {};
+      for (const row of sessionDailyRows) {
+        const day = toDay(row.get("day"));
+        if (!day) continue;
+        sessionDailyMap[day] = Number(row.get("count") || 0);
+      }
+      const useSessionVelocityDaily = !Object.values(dailyMap).some((value) => Number(value || 0) > 0);
       const daily = rangeDays.map((day) => ({
         day,
-        count: dailyMap[day] || 0,
+        count: useSessionVelocityDaily ? sessionDailyMap[day] || 0 : dailyMap[day] || 0,
       }));
 
       const hourlyMap = {};
       for (const row of hourlyRows) {
-        const hourValue = row.get("hour");
-        const hour = hourValue instanceof Date ? hourValue.toISOString() : String(hourValue);
+        const hour = toHour(row.get("hour"));
+        if (!hour) continue;
         hourlyMap[hour] = Number(row.get("count") || 0);
       }
+      const sessionHourlyMap = {};
+      for (const row of sessionHourlyRows) {
+        const hour = toHour(row.get("hour"));
+        if (!hour) continue;
+        sessionHourlyMap[hour] = Number(row.get("count") || 0);
+      }
+      const useSessionVelocityHourly = !Object.values(hourlyMap).some((value) => Number(value || 0) > 0);
       const hourly = hourList.map((hour) => ({
         hour,
-        count: hourlyMap[hour] || 0,
+        count: useSessionVelocityHourly ? sessionHourlyMap[hour] || 0 : hourlyMap[hour] || 0,
       }));
 
       res.json({
@@ -1072,6 +1257,8 @@ router.get(
         deposits,
         withdrawals,
         cashoutTxRows,
+        redeemedVoucherRows,
+        cashoutTxDetailRows,
       ] = await Promise.all([
         GameRound.findAll({
           where: {
@@ -1185,16 +1372,37 @@ router.get(
           group: [literal(`DATE("createdAt")`)],
           order: [[literal(`DATE("createdAt")`), "ASC"]],
         }),
+        Voucher.findAll({
+          where: {
+            redeemedAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: ["id", "createdAt", "redeemedAt", "metadata"],
+        }),
+        Transaction.findAll({
+          where: {
+            type: "voucher_debit",
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: ["createdAt", "metadata", "reference"],
+        }),
       ]);
 
       const pendingMap = {};
       for (const row of pendingRounds) {
-        const day = row.get("day");
+        const day = toDay(row.get("day"));
+        if (!day) continue;
         pendingMap[day] = Number(row.get("count") || 0);
       }
       const staleMap = {};
       for (const row of staleRounds) {
-        const day = row.get("day");
+        const day = toDay(row.get("day"));
+        if (!day) continue;
         staleMap[day] = Number(row.get("count") || 0);
       }
 
@@ -1206,23 +1414,27 @@ router.get(
 
       const issuedMap = {};
       for (const row of issuedRows) {
-        const day = row.get("day");
+        const day = toDay(row.get("day"));
+        if (!day) continue;
         issuedMap[day] = Number(row.get("count") || 0);
       }
       const redeemedMap = {};
       for (const row of redeemedRows) {
-        const day = row.get("day");
+        const day = toDay(row.get("day"));
+        if (!day) continue;
         redeemedMap[day] = Number(row.get("count") || 0);
       }
       const expiredMap = {};
       for (const row of expiredRows) {
-        const day = row.get("day");
+        const day = toDay(row.get("day"));
+        if (!day) continue;
         expiredMap[day] = Number(row.get("count") || 0);
       }
       const cashoutMap = {};
       const cashoutAmountMap = {};
       for (const row of cashoutTxRows) {
-        const day = row.get("day");
+        const day = toDay(row.get("day"));
+        if (!day) continue;
         cashoutMap[day] = Number(row.get("count") || 0);
         cashoutAmountMap[day] = Number(row.get("amount") || 0);
       }
@@ -1237,13 +1449,28 @@ router.get(
       }));
 
       const staffIds = new Set();
+      const addStaffId = (value) => {
+        const id = normalizeStaffId(value);
+        if (id) staffIds.add(id);
+      };
       for (const intent of deposits) {
-        const id = intent?.metadata?.markedByStaffId;
-        if (id) staffIds.add(Number(id));
+        addStaffId(intent?.metadata?.markedByStaffId);
       }
       for (const intent of withdrawals) {
-        const id = intent?.metadata?.markedByStaffId;
-        if (id) staffIds.add(Number(id));
+        addStaffId(intent?.metadata?.markedByStaffId);
+      }
+      for (const voucher of redeemedVoucherRows) {
+        const metadata = asObject(voucher?.metadata);
+        addStaffId(metadata.redeemedByStaffId || metadata.activatedByStaffId);
+      }
+      for (const tx of cashoutTxDetailRows) {
+        const metadata = asObject(tx?.metadata);
+        addStaffId(
+          metadata.cashoutByStaffId ||
+            metadata.terminatedByStaffId ||
+            metadata.deactivatedByStaffId ||
+            metadata.markedByStaffId
+        );
       }
 
       const staffRoles = {};
@@ -1261,15 +1488,16 @@ router.get(
       const cashierTimes = [];
       const unknownTimes = [];
 
-      const addResolution = (intent, resolvedAt) => {
-        const createdAt = intent.createdAt ? new Date(intent.createdAt) : null;
-        const resolved = resolvedAt ? new Date(resolvedAt) : null;
+      const addResolution = (createdAtRaw, resolvedAtRaw, staffIdRaw) => {
+        const createdAt = createdAtRaw ? new Date(createdAtRaw) : null;
+        const resolved = resolvedAtRaw ? new Date(resolvedAtRaw) : null;
         if (!createdAt || !resolved || Number.isNaN(createdAt.getTime()) || Number.isNaN(resolved.getTime())) {
           return;
         }
+        if (resolved < createdAt) return;
         const minutes = Math.max(0, (resolved - createdAt) / 60000);
-        const staffId = intent?.metadata?.markedByStaffId;
-        const role = staffId ? staffRoles[Number(staffId)] : null;
+        const staffId = normalizeStaffId(staffIdRaw);
+        const role = staffId ? staffRoles[staffId] : null;
         if (role === "cashier") {
           cashierTimes.push(minutes);
         } else if (role) {
@@ -1279,8 +1507,70 @@ router.get(
         }
       };
 
-      deposits.forEach((intent) => addResolution(intent, intent.creditedAt));
-      withdrawals.forEach((intent) => addResolution(intent, intent.sentAt));
+      const voucherIdsForCashoutResolution = Array.from(
+        new Set(
+          cashoutTxDetailRows
+            .map((tx) => {
+              const metadata = asObject(tx?.metadata);
+              return metadata.voucherId ? String(metadata.voucherId) : null;
+            })
+            .filter(Boolean)
+        )
+      );
+
+      let cashoutResolutionVouchers = [];
+      if (voucherIdsForCashoutResolution.length) {
+        cashoutResolutionVouchers = await Voucher.findAll({
+          where: {
+            id: { [Op.in]: voucherIdsForCashoutResolution },
+          },
+          attributes: ["id", "createdAt", "redeemedAt", "metadata"],
+        });
+      }
+      const cashoutVoucherMap = new Map(
+        cashoutResolutionVouchers.map((voucher) => [String(voucher.id), voucher])
+      );
+
+      const addIntentResolution = (intent, resolvedAt) => {
+        const createdAt = intent.createdAt ? new Date(intent.createdAt) : null;
+        const resolved = resolvedAt ? new Date(resolvedAt) : null;
+        if (!createdAt || !resolved || Number.isNaN(createdAt.getTime()) || Number.isNaN(resolved.getTime())) {
+          return;
+        }
+        addResolution(createdAt, resolved, intent?.metadata?.markedByStaffId);
+      };
+
+      deposits.forEach((intent) => addIntentResolution(intent, intent.creditedAt));
+      withdrawals.forEach((intent) => addIntentResolution(intent, intent.sentAt));
+
+      for (const voucher of redeemedVoucherRows) {
+        const metadata = asObject(voucher?.metadata);
+        addResolution(
+          voucher.createdAt,
+          voucher.redeemedAt,
+          metadata.redeemedByStaffId || metadata.activatedByStaffId
+        );
+      }
+
+      for (const tx of cashoutTxDetailRows) {
+        const metadata = asObject(tx?.metadata);
+        const voucherId = metadata.voucherId ? String(metadata.voucherId) : null;
+        const voucher = voucherId ? cashoutVoucherMap.get(voucherId) : null;
+        const cashoutStartedAt =
+          voucher?.redeemedAt ||
+          voucher?.createdAt ||
+          metadata.redeemedAt ||
+          metadata.voucherRedeemedAt ||
+          null;
+        addResolution(
+          cashoutStartedAt,
+          tx.createdAt,
+          metadata.cashoutByStaffId ||
+            metadata.terminatedByStaffId ||
+            metadata.deactivatedByStaffId ||
+            metadata.markedByStaffId
+        );
+      }
 
       res.json({
         ok: true,
@@ -1335,7 +1625,7 @@ router.get(
     const dayList = buildDayList(startDate, endDateExclusive);
 
     try {
-      const [gameAgg, spinRows, volatilityRows] = await Promise.all([
+      const [gameAggRows, spinRows, volatilityRows] = await Promise.all([
         GameRound.findAll({
           where: {
             createdAt: {
@@ -1398,32 +1688,140 @@ router.get(
         }),
       ]);
 
-      const rtpByGame = (gameAgg || [])
-        .map((row) => {
-          const gameId = row.get("gameId") || row.gameId;
-          const rounds = Number(row.get("rounds") || 0);
-          const totalBet = Number(row.get("totalBet") || 0);
-          const totalWin = Number(row.get("totalWin") || 0);
-          const actualRtp = totalBet > 0 ? totalWin / totalBet : 0;
-          const expectedRtp = getExpectedRtp(gameId);
-          return {
-            gameId,
-            rounds,
-            totalBet,
-            totalWin,
-            actualRtp,
-            expectedRtp,
-            deviation: actualRtp - expectedRtp,
+      let txFallback = null;
+      const needsTxFallback =
+        !(gameAggRows || []).length || !(spinRows || []).length || !(volatilityRows || []).length;
+
+      if (needsTxFallback) {
+        const txRows = await Transaction.findAll({
+          where: {
+            type: { [Op.in]: ["game_bet", "game_win"] },
+            createdAt: {
+              [Op.gte]: startDate,
+              [Op.lt]: endDateExclusive,
+            },
+          },
+          attributes: ["type", "amount", "createdAt", "reference", "metadata"],
+        }).catch((err) => {
+          console.warn("[REPORTS] Transaction fallback aggregate failed:", err.message);
+          return [];
+        });
+
+        if ((txRows || []).length) {
+          const byGame = new Map();
+          const spinsByDay = {};
+          const volatilityStats = new Map();
+
+          for (const tx of txRows) {
+            const gameId = extractGameIdFromTransaction(tx);
+            if (!gameId) continue;
+
+            const txType = tx.type || tx.get?.("type");
+            const amountRaw = tx.amount ?? tx.get?.("amount");
+            const amount = Math.abs(Number(amountRaw || 0));
+            if (!Number.isFinite(amount)) continue;
+
+            const day = toDay(tx.createdAt || tx.get?.("createdAt"));
+            if (!day) continue;
+
+            const existing = byGame.get(gameId) || {
+              gameId,
+              rounds: 0,
+              txCount: 0,
+              totalBet: 0,
+              totalWin: 0,
+            };
+            existing.txCount += 1;
+
+            if (txType === "game_bet") {
+              existing.totalBet += amount;
+              existing.rounds += 1;
+              spinsByDay[day] = (spinsByDay[day] || 0) + 1;
+            } else if (txType === "game_win") {
+              existing.totalWin += amount;
+            }
+            byGame.set(gameId, existing);
+
+            const sampleNet =
+              txType === "game_win" ? amount : txType === "game_bet" ? -amount : null;
+            if (sampleNet == null) continue;
+
+            const volKey = `${gameId}__${day}`;
+            const volExisting = volatilityStats.get(volKey) || {
+              day,
+              gameId,
+              rounds: 0,
+              sumNet: 0,
+              sumSquares: 0,
+            };
+            volExisting.rounds += 1;
+            volExisting.sumNet += sampleNet;
+            volExisting.sumSquares += sampleNet * sampleNet;
+            volatilityStats.set(volKey, volExisting);
+          }
+
+          txFallback = {
+            byGame: Array.from(byGame.values()).map((entry) => ({
+              gameId: entry.gameId,
+              rounds: entry.rounds || entry.txCount || 0,
+              totalBet: entry.totalBet || 0,
+              totalWin: entry.totalWin || 0,
+            })),
+            spinsByDay,
+            volatilityStats: Array.from(volatilityStats.values()),
           };
-        })
+        }
+      }
+
+      const rtpByGame = ((gameAggRows || []).length
+        ? (gameAggRows || []).map((row) => {
+            const gameId = row.get("gameId") || row.gameId;
+            const rounds = Number(row.get("rounds") || 0);
+            const totalBet = Number(row.get("totalBet") || 0);
+            const totalWin = Number(row.get("totalWin") || 0);
+            const actualRtp = totalBet > 0 ? totalWin / totalBet : 0;
+            const expectedRtp = getExpectedRtp(gameId);
+            return {
+              gameId,
+              rounds,
+              totalBet,
+              totalWin,
+              actualRtp,
+              expectedRtp,
+              deviation: actualRtp - expectedRtp,
+            };
+          })
+        : (txFallback?.byGame || []).map((row) => {
+            const gameId = row.gameId;
+            const rounds = Number(row.rounds || 0);
+            const totalBet = Number(row.totalBet || 0);
+            const totalWin = Number(row.totalWin || 0);
+            const actualRtp = totalBet > 0 ? totalWin / totalBet : 0;
+            const expectedRtp = getExpectedRtp(gameId);
+            return {
+              gameId,
+              rounds,
+              totalBet,
+              totalWin,
+              actualRtp,
+              expectedRtp,
+              deviation: actualRtp - expectedRtp,
+            };
+          }))
+        .filter((row) => row.gameId)
         .sort((a, b) => b.totalBet - a.totalBet);
 
       const spinMap = {};
-      for (const row of spinRows || []) {
-        const day = toDay(row.get("day"));
-        if (!day) continue;
-        spinMap[day] = Number(row.get("spins") || 0);
+      if ((spinRows || []).length) {
+        for (const row of spinRows || []) {
+          const day = toDay(row.get("day"));
+          if (!day) continue;
+          spinMap[day] = Number(row.get("spins") || 0);
+        }
+      } else if (txFallback?.spinsByDay) {
+        Object.assign(spinMap, txFallback.spinsByDay);
       }
+
       const spinDays = dayList.map((day) => ({
         day,
         spins: spinMap[day] || 0,
@@ -1431,13 +1829,15 @@ router.get(
 
       let maxVolatility = 0;
       const volatilityCells = [];
-      for (const row of volatilityRows || []) {
-        const day = toDay(row.get("day"));
-        const gameId = row.get("gameId") || row.gameId;
+      const volatilitySourceRows =
+        (volatilityRows || []).length ? volatilityRows : txFallback?.volatilityStats || [];
+      for (const row of volatilitySourceRows) {
+        const day = toDay(row.get ? row.get("day") : row.day);
+        const gameId = row.get ? row.get("gameId") || row.gameId : row.gameId;
         if (!day || !gameId) continue;
-        const rounds = Number(row.get("rounds") || 0);
-        const sumNet = Number(row.get("sumNet") || 0);
-        const sumSquares = Number(row.get("sumSquares") || 0);
+        const rounds = Number(row.get ? row.get("rounds") : row.rounds || 0);
+        const sumNet = Number(row.get ? row.get("sumNet") : row.sumNet || 0);
+        const sumSquares = Number(row.get ? row.get("sumSquares") : row.sumSquares || 0);
         let volatility = 0;
         if (rounds > 0) {
           const mean = sumNet / rounds;
@@ -1453,6 +1853,10 @@ router.get(
         });
       }
 
+      const volatilityGameList = rtpByGame.length
+        ? rtpByGame.map((game) => String(game.gameId))
+        : Array.from(new Set(volatilityCells.map((cell) => String(cell.gameId))));
+
       res.json({
         ok: true,
         period: { start, end, label: `${start} → ${end}` },
@@ -1461,7 +1865,7 @@ router.get(
         },
         volatility: {
           days: dayList,
-          games: rtpByGame.map((game) => String(game.gameId)),
+          games: volatilityGameList,
           cells: volatilityCells,
           max: maxVolatility,
         },
@@ -1527,7 +1931,8 @@ router.get(
       );
 
       for (const r of rows) {
-        const day = r.get("day");
+        const day = toDay(r.get("day"));
+        if (!day) continue;
         const type = r.type;
         const amt = Number(r.get("totalAmount") || 0);
         const entry = byDay[day];
