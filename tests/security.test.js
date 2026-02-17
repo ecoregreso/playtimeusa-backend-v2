@@ -50,7 +50,11 @@ describe('Refresh rotation and reuse detection', () => {
   let refreshToken;
   beforeAll(async () => {
     const passwordHash = await bcrypt.hash('Passw0rd!', 10);
-    const tenant = await Tenant.create({ id: '11111111-1111-1111-1111-111111111111', name: 'Test Tenant' });
+    const tenant = await Tenant.create({
+      id: "11111111-1111-1111-1111-111111111111",
+      externalId: "11111111-1111-1111-1111-111111111111",
+      name: "Test Tenant",
+    });
     user = await User.create({
       email: 'user@example.com',
       username: 'u1',

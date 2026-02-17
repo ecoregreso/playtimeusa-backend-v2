@@ -24,7 +24,9 @@ const PurchaseOrder = sequelize.define(
       allowNull: true,
     },
     status: {
-      // pending -> approved (owner shared BTC address) -> awaiting_credit (tenant confirmed Wasabi BTC send) -> completed (owner credited and receipt sent) -> acknowledged (optional tenant acknowledgement)
+      // pending -> approved (owner shared BTC address) -> awaiting_credit (tenant confirmed Wasabi BTC send)
+      // -> credited (owner issued exact requested credit amount) -> completed (owner finalized paid + receipt)
+      // -> acknowledged (optional tenant acknowledgement)
       type: DataTypes.STRING,
       allowNull: false,
       defaultValue: "pending",

@@ -7,6 +7,7 @@ const {
   PERMISSIONS,
 } = require("../middleware/staffAuth");
 const { wipeTenantData } = require("../services/wipeService");
+const { normalizeTenantIdentifier, resolveTenantUuid } = require("../services/tenantIdentifierService");
 
 const router = express.Router();
 
@@ -39,21 +40,35 @@ router.post(
   requirePermission(PERMISSIONS.TENANT_MANAGE),
   async (req, res) => {
     try {
-      const tenantId = String(req.params.id || "").trim();
+      const tenantIdentifier = normalizeTenantIdentifier(req.params.id || "");
+      if (!tenantIdentifier) {
+        return res.status(400).json({ ok: false, error: "tenantId is required" });
+      }
+
+      const resolvedTenantId = await resolveTenantUuid(tenantIdentifier);
+      if (req.staff?.role !== "owner") {
+        if (!req.staff?.tenantId) {
+          return res.status(403).json({ ok: false, error: "Forbidden" });
+        }
+        if (!resolvedTenantId || req.staff.tenantId !== resolvedTenantId) {
+          return res.status(403).json({ ok: false, error: "Forbidden" });
+        }
+      }
+      if (req.staff?.role === "owner" && !resolvedTenantId) {
+        return res.status(404).json({ ok: false, error: "Tenant not found" });
+      }
+      const tenantId = resolvedTenantId || req.staff?.tenantId || null;
       if (!tenantId) {
         return res.status(400).json({ ok: false, error: "tenantId is required" });
       }
 
-      if (req.staff?.role !== "owner" && req.staff?.tenantId !== tenantId) {
-        return res.status(403).json({ ok: false, error: "Forbidden" });
-      }
-
       const confirm = String(req.body?.confirm || "").trim();
-      if (confirm !== `WIPE ${tenantId}`) {
+      const expectedConfirmation = `WIPE ${tenantIdentifier}`;
+      if (confirm !== expectedConfirmation) {
         return res.status(400).json({
           ok: false,
           error: "Confirmation phrase mismatch",
-          expected: `WIPE ${tenantId}`,
+          expected: expectedConfirmation,
         });
       }
 

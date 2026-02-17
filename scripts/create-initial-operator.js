@@ -1,6 +1,7 @@
 require("dotenv").config();
 const bcrypt = require("bcryptjs");
 const { Sequelize } = require("sequelize");
+const crypto = require("crypto");
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -77,8 +78,8 @@ async function main() {
       tenantId = tenantRows[0].id;
     } else {
       const [createdRows] = await sequelize.query(
-        "INSERT INTO tenants (name, status, \"createdAt\", \"updatedAt\") VALUES ($1, 'active', NOW(), NOW()) RETURNING id",
-        { bind: ["Default"] }
+        "INSERT INTO tenants (name, status, external_id, \"createdAt\", \"updatedAt\") VALUES ($1, 'active', $2, NOW(), NOW()) RETURNING id",
+        { bind: ["Default", crypto.randomUUID()] }
       );
       tenantId = createdRows[0].id;
     }

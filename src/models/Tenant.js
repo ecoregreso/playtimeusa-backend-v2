@@ -10,6 +10,11 @@ const Tenant = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    externalId: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+      field: "external_id",
+    },
     name: {
       type: DataTypes.STRING(120),
       allowNull: false,
@@ -28,7 +33,7 @@ const Tenant = sequelize.define(
   {
     tableName: "tenants",
     timestamps: true,
-    indexes: [{ fields: ["name"] }, { fields: ["distributor_id"] }],
+    indexes: [{ fields: ["name"] }, { fields: ["distributor_id"] }, { unique: true, fields: ["external_id"] }],
   }
 );
 

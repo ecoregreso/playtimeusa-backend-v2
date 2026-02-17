@@ -33,6 +33,12 @@ const {
 const { wipeAllData, wipeTenantData } = require("../services/wipeService");
 const { emitSecurityEvent } = require("../lib/security/events");
 const { writeAuditLog } = require("../lib/security/audit");
+const {
+  normalizeTenantIdentifier,
+  isUuidLike,
+  findTenantByIdentifier,
+  isTenantIdentifierTaken,
+} = require("../services/tenantIdentifierService");
 
 const router = express.Router();
 
@@ -75,14 +81,25 @@ function slugify(input) {
     .slice(0, 32);
 }
 
-function normalizeTenantIdInput(raw) {
-  if (raw === null || raw === undefined) return null;
-  const v = String(raw).trim().toLowerCase();
-  return v || null;
+function buildTenantLoginUrl(tenant = null) {
+  const identifier = tenant?.externalId || tenant?.id || "";
+  const encodedIdentifier = encodeURIComponent(String(identifier));
+  const base = adminUiBase();
+  return base ? `${base}/login?tenantId=${encodedIdentifier}` : `/login?tenantId=${encodedIdentifier}`;
 }
 
-function isUuidLike(value) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ""));
+async function resolveTenantFromAnyId(rawTenantIdentifier, options = {}) {
+  const tenantIdentifier = normalizeTenantIdentifier(rawTenantIdentifier);
+  if (!tenantIdentifier) {
+    return { tenantIdentifier: null, tenantId: null, tenant: null };
+  }
+
+  const tenant = await findTenantByIdentifier(tenantIdentifier, options);
+  return {
+    tenantIdentifier,
+    tenantId: tenant?.id || null,
+    tenant: tenant || null,
+  };
 }
 
 async function ensureUniqueUsername({ tenantId, desired }, transaction) {
@@ -511,7 +528,7 @@ router.get(
         cashflowRows,
       ] = await Promise.all([
         Tenant.findAll({
-          attributes: ["id", "name", "status"],
+          attributes: ["id", "externalId", "name", "status"],
           order: [["name", "ASC"]],
         }),
         TenantWallet.findAll({
@@ -630,6 +647,7 @@ router.get(
 
         return {
           tenantId,
+          tenantExternalId: tenant.externalId || tenantId,
           tenantName: tenant.name,
           status: tenant.status,
           playersTotal: toNumeric(totalPlayers.playersTotal),
@@ -671,18 +689,21 @@ router.get(
       const charts = {
         ngrByTenant: tenantRows.map((row) => ({
           tenantId: row.tenantId,
+          tenantExternalId: row.tenantExternalId,
           tenantName: row.tenantName,
           ngrCents: row.ngrCents,
           ngrFun: row.money.ngrFun,
         })),
         ordersByTenant: tenantRows.map((row) => ({
           tenantId: row.tenantId,
+          tenantExternalId: row.tenantExternalId,
           tenantName: row.tenantName,
           ordersInRange: row.ordersInRange,
           ordersCompleted: row.ordersCompleted,
         })),
         walletByTenant: tenantRows.map((row) => ({
           tenantId: row.tenantId,
+          tenantExternalId: row.tenantExternalId,
           tenantName: row.tenantName,
           walletBalanceCents: row.walletBalanceCents,
           walletFun: row.money.walletFun,
@@ -712,14 +733,10 @@ router.get(
   requireOwner,
   async (req, res) => {
     try {
-      const tenantId = String(req.params.tenantId || "").trim();
-      if (!tenantId) {
+      const { tenantIdentifier, tenantId, tenant } = await resolveTenantFromAnyId(req.params.tenantId);
+      if (!tenantIdentifier) {
         return res.status(400).json({ ok: false, error: "tenantId is required" });
       }
-
-      const tenant = await Tenant.findByPk(tenantId, {
-        attributes: ["id", "name", "status", "createdAt"],
-      });
       if (!tenant) {
         return res.status(404).json({ ok: false, error: "Tenant not found" });
       }
@@ -1124,7 +1141,9 @@ router.post(
   async (req, res) => {
     const name = String(req.body?.name || "").trim();
     const status = String(req.body?.status || "active").trim() || "active";
-    const requestedTenantId = normalizeTenantIdInput(req.body?.tenantId || req.body?.id);
+    const requestedTenantIdentifier = normalizeTenantIdentifier(
+      req.body?.tenantId || req.body?.id || req.body?.externalId || req.body?.externalTenantId
+    );
 
     const seedCreditsCents = clampCents(req.body?.seedCreditsCents || req.body?.initialCreditsCents || 0);
     const seedVoucherPoolCents = clampCents(req.body?.seedVoucherPoolCents || req.body?.initialVoucherPoolCents || 0);
@@ -1139,31 +1158,32 @@ router.post(
     if (!name) {
       return res.status(400).json({ ok: false, error: "Tenant name is required" });
     }
-    if (requestedTenantId && !isUuidLike(requestedTenantId)) {
-      return res.status(400).json({
-        ok: false,
-        error: "tenantId must be a valid UUID (example: 123e4567-e89b-12d3-a456-426614174000)",
-      });
-    }
 
     try {
       const result = await withRequestTransaction(req, async (t) => {
-        if (requestedTenantId) {
-          const [existingTenant, existingDistributor] = await Promise.all([
-            Tenant.findByPk(requestedTenantId, { transaction: t, lock: t.LOCK.UPDATE }),
-            Distributor.findByPk(requestedTenantId, { transaction: t, lock: t.LOCK.UPDATE }),
-          ]);
-          if (existingTenant || existingDistributor) {
-            const conflict = new Error(`Tenant ID already exists: ${requestedTenantId}`);
+        if (requestedTenantIdentifier) {
+          const identifierTaken = await isTenantIdentifierTaken(requestedTenantIdentifier, {
+            transaction: t,
+            lock: t.LOCK.UPDATE,
+          });
+          if (identifierTaken) {
+            const conflict = new Error(`Tenant identifier already exists: ${requestedTenantIdentifier}`);
             conflict.status = 409;
             throw conflict;
           }
         }
 
+        const tenantInternalId =
+          requestedTenantIdentifier && isUuidLike(requestedTenantIdentifier)
+            ? requestedTenantIdentifier
+            : crypto.randomUUID();
+        const tenantExternalId = requestedTenantIdentifier || tenantInternalId;
+
         // 1) create tenant
         const tenant = await Tenant.create(
           {
-            ...(requestedTenantId ? { id: requestedTenantId } : {}),
+            id: tenantInternalId,
+            externalId: tenantExternalId,
             name,
             status,
             distributorId: null,
@@ -1273,8 +1293,7 @@ router.post(
           );
         }
 
-        const base = adminUiBase();
-        const adminUiUrl = base ? `${base}/login?tenantId=${tenant.id}` : `/login?tenantId=${tenant.id}`;
+        const adminUiUrl = buildTenantLoginUrl(tenant);
 
         return {
           tenant: tenant.toJSON(),
@@ -1318,10 +1337,10 @@ router.post(
         return res.status(err.status).json({ ok: false, error: err.message || "Tenant creation failed" });
       }
       if (
-        requestedTenantId &&
+        requestedTenantIdentifier &&
         (err?.name === "SequelizeUniqueConstraintError" || err?.name === "SequelizeDatabaseError")
       ) {
-        return res.status(409).json({ ok: false, error: `Tenant ID already exists: ${requestedTenantId}` });
+        return res.status(409).json({ ok: false, error: `Tenant identifier already exists: ${requestedTenantIdentifier}` });
       }
       return res.status(500).json({ ok: false, error: "Failed to create tenant" });
     }
@@ -1331,7 +1350,15 @@ router.post(
 // Per-tenant config
 async function handleGetTenantConfig(req, res) {
   try {
-    const tenantId = String(req.params.tenantId || req.params.id || "").trim();
+    const { tenantIdentifier, tenantId, tenant } = await resolveTenantFromAnyId(
+      req.params.tenantId || req.params.id
+    );
+    if (!tenantIdentifier) {
+      return res.status(400).json({ ok: false, error: "tenantId is required" });
+    }
+    if (!tenant || !tenantId) {
+      return res.status(404).json({ ok: false, error: "Tenant not found" });
+    }
     const system = await getSystemConfig();
     const tenantCfgRaw = await getJson(tenantConfigKey(tenantId), {});
     const tenantCfg = { ...(tenantCfgRaw || {}) };
@@ -1353,7 +1380,15 @@ async function handleGetTenantConfig(req, res) {
 
 async function handleSetTenantConfig(req, res) {
   try {
-    const tenantId = String(req.params.tenantId || req.params.id || "").trim();
+    const { tenantIdentifier, tenantId, tenant } = await resolveTenantFromAnyId(
+      req.params.tenantId || req.params.id
+    );
+    if (!tenantIdentifier) {
+      return res.status(400).json({ ok: false, error: "tenantId is required" });
+    }
+    if (!tenant || !tenantId) {
+      return res.status(404).json({ ok: false, error: "Tenant not found" });
+    }
     const patch = req.body?.config;
     if (!patch || typeof patch !== "object") {
       return res.status(400).json({ ok: false, error: "config must be an object" });
@@ -1393,7 +1428,15 @@ router.put("/tenants/:id/config", staffAuth, requireOwner, handleSetTenantConfig
 // Reset the tenant bootstrap admin password (returns the new password one-time)
 async function handleResetAdminPassword(req, res) {
   try {
-    const tenantId = String(req.params.tenantId || req.params.id || "").trim();
+    const { tenantIdentifier, tenantId, tenant } = await resolveTenantFromAnyId(
+      req.params.tenantId || req.params.id
+    );
+    if (!tenantIdentifier) {
+      return res.status(400).json({ ok: false, error: "tenantId is required" });
+    }
+    if (!tenant || !tenantId) {
+      return res.status(404).json({ ok: false, error: "Tenant not found" });
+    }
     let staffId = await getSetting(rootStaffKey(tenantId));
 
     let staff = null;
@@ -1425,8 +1468,7 @@ async function handleResetAdminPassword(req, res) {
       value: String(staff.id),
     });
 
-    const base = adminUiBase();
-    const adminUiUrl = base ? `${base}/login?tenantId=${tenantId}` : `/login?tenantId=${tenantId}`;
+    const adminUiUrl = buildTenantLoginUrl(tenant);
 
     await tryAuditLog({
       tenantId,
@@ -1457,7 +1499,13 @@ router.post(
   requireOwner,
   async (req, res) => {
     try {
-      const tenantId = req.params.tenantId;
+      const { tenantIdentifier, tenantId } = await resolveTenantFromAnyId(req.params.tenantId);
+      if (!tenantIdentifier) {
+        return res.status(400).json({ ok: false, error: "tenantId is required" });
+      }
+      if (!tenantId) {
+        return res.status(404).json({ ok: false, error: "Tenant not found" });
+      }
       const amountCents = clampCents(req.body?.amountCents);
       const memo = (req.body?.memo || "").trim() || null;
 
@@ -1523,7 +1571,13 @@ router.post(
   requireOwner,
   async (req, res) => {
     try {
-      const tenantId = req.params.tenantId;
+      const { tenantIdentifier, tenantId } = await resolveTenantFromAnyId(req.params.tenantId);
+      if (!tenantIdentifier) {
+        return res.status(400).json({ ok: false, error: "tenantId is required" });
+      }
+      if (!tenantId) {
+        return res.status(404).json({ ok: false, error: "Tenant not found" });
+      }
       const amountCents = clampCents(req.body?.amountCents);
       const memo = (req.body?.memo || "").trim() || null;
 
@@ -1669,7 +1723,12 @@ router.get(
     try {
       const tenants = await Tenant.findAll({ order: [["createdAt", "DESC"]] });
       // Present tenants as distributors for older UIs.
-      const distributors = tenants.map((t) => ({ id: t.id, name: t.name, status: t.status }));
+      const distributors = tenants.map((t) => ({
+        id: t.id,
+        externalId: t.externalId || t.id,
+        name: t.name,
+        status: t.status,
+      }));
       res.json({ ok: true, distributors });
     } catch (err) {
       console.error("[OWNER] distributors list error:", err);
@@ -1699,9 +1758,12 @@ router.delete(
   requireOwner,
   async (req, res) => {
     try {
-      const tenantId = String(req.params.tenantId || "").trim();
-      if (!tenantId) {
+      const { tenantIdentifier, tenantId } = await resolveTenantFromAnyId(req.params.tenantId);
+      if (!tenantIdentifier) {
         return res.status(400).json({ ok: false, error: "tenantId required" });
+      }
+      if (!tenantId) {
+        return res.status(404).json({ ok: false, error: "Tenant not found" });
       }
 
       let beforeStatus = null;

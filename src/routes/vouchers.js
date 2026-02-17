@@ -40,6 +40,7 @@ const { logEvent } = require("../services/auditService");
 const { emitSecurityEvent, maskCode } = require("../lib/security/events");
 const { buildLimiter } = require("../utils/rateLimit");
 const { getLock, recordFailure, recordSuccess } = require("../utils/lockout");
+const { normalizeTenantIdentifier, resolveTenantUuid } = require("../services/tenantIdentifierService");
 
 const router = express.Router();
 
@@ -119,18 +120,14 @@ async function getEffectiveConfig(tenantId) {
   return effective;
 }
 
-function normalizeTenantId(value) {
-  if (!value) return null;
-  const trimmed = String(value).trim();
-  return trimmed || null;
-}
-
-function resolveTenantId(req) {
+async function resolveTenantId(req) {
   if (req.staff?.role !== "owner") {
     return req.staff?.tenantId || null;
   }
   const raw = req.query?.tenantId || req.body?.tenantId || req.staff?.tenantId || null;
-  return normalizeTenantId(raw);
+  const tenantIdentifier = normalizeTenantIdentifier(raw);
+  if (!tenantIdentifier) return null;
+  return resolveTenantUuid(tenantIdentifier);
 }
 
 function sanitizeVoucher(voucher) {
@@ -144,7 +141,7 @@ function sanitizeVoucher(voucher) {
 function enforceVouchersEnabled() {
   return async (req, res, next) => {
     try {
-      const tenantId = resolveTenantId(req);
+      const tenantId = await resolveTenantId(req);
       const cfg = await getEffectiveConfig(tenantId);
       req.effectiveConfig = cfg;
       if (cfg.maintenanceMode && req.staff?.role !== "owner") {
@@ -408,7 +405,7 @@ router.get(
         parseInt(req.query.limit || "200", 10),
         500
       );
-      const tenantId = resolveTenantId(req);
+      const tenantId = await resolveTenantId(req);
       const where = tenantId ? { tenantId } : undefined;
 
       const vouchers = await Voucher.findAll({
@@ -674,13 +671,15 @@ router.post(
         return res.status(400).json({ error: "maxCashout must be greater than or equal to total voucher credit" });
       }
 
-      const ownerTenantId =
+      const ownerTenantIdentifier =
         req.staff?.role === "owner"
-          ? (typeof req.body?.tenantId === "string"
-              ? req.body.tenantId.trim()
-              : req.body?.tenantId) || null
+          ? normalizeTenantIdentifier(req.body?.tenantId)
           : null;
-      if (ownerTenantId) {
+      if (ownerTenantIdentifier) {
+        const ownerTenantId = await resolveTenantUuid(ownerTenantIdentifier);
+        if (!ownerTenantId) {
+          return res.status(404).json({ error: "Tenant not found" });
+        }
         tenantId = ownerTenantId;
       }
 
@@ -961,7 +960,7 @@ router.post(
   enforceVouchersEnabled(),
   async (req, res) => {
     const { code, pin, userId } = req.body || {};
-    const tenantId = resolveTenantId(req);
+    const tenantId = await resolveTenantId(req);
 
     if (!code || !pin || !userId) {
       return res.status(400).json({ error: "code, pin, and userId are required" });
@@ -1083,7 +1082,7 @@ router.post(
   enforceVouchersEnabled(),
   async (req, res) => {
     const { code, reason } = req.body || {};
-    const tenantId = resolveTenantId(req);
+    const tenantId = await resolveTenantId(req);
     if (!code) {
       return res.status(400).json({ error: "code is required" });
     }

@@ -2,18 +2,19 @@ const express = require("express");
 const { Op } = require("sequelize");
 const { requireStaffAuth, PERMISSIONS } = require("../middleware/staffAuth");
 const { Voucher, Transaction, StaffUser, ShiftClosure } = require("../models");
+const { normalizeTenantIdentifier, resolveTenantUuid } = require("../services/tenantIdentifierService");
 
 const router = express.Router();
 
 function normalizeTenantId(value) {
-  if (!value) return null;
-  const trimmed = String(value).trim();
-  return trimmed || null;
+  return normalizeTenantIdentifier(value);
 }
 
-function resolveTenantScope(staff = {}, tenantIdOverride = null) {
+async function resolveTenantScope(staff = {}, tenantIdOverride = null) {
   if (staff.role === "owner") {
-    return normalizeTenantId(tenantIdOverride || staff.tenantId || null);
+    const tenantIdentifier = normalizeTenantId(tenantIdOverride || staff.tenantId || null);
+    if (!tenantIdentifier) return null;
+    return resolveTenantUuid(tenantIdentifier);
   }
   return staff.tenantId || null;
 }
@@ -55,7 +56,7 @@ function ensureBucket(map, staffId) {
 router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req, res) => {
   try {
     const staff = req.staff || {};
-    const tenantId = resolveTenantScope(staff, req.query?.tenantId || null);
+    const tenantId = await resolveTenantScope(staff, req.query?.tenantId || null);
     if (!tenantId) {
       return res
         .status(400)
@@ -194,7 +195,7 @@ router.get("/summary", requireStaffAuth([PERMISSIONS.FINANCE_READ]), async (req,
 router.post("/close", requireStaffAuth([PERMISSIONS.FINANCE_WRITE]), async (req, res) => {
   try {
     const staff = req.staff || {};
-    const tenantId = resolveTenantScope(staff, req.body?.tenantId || req.query?.tenantId || null);
+    const tenantId = await resolveTenantScope(staff, req.body?.tenantId || req.query?.tenantId || null);
     if (!tenantId) {
       return res.status(400).json({ ok: false, error: "Tenant is required (owners must pass tenantId)." });
     }

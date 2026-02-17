@@ -14,6 +14,7 @@ const { signAccessToken, signRefreshToken, verifyRefreshToken } = require("../ut
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { initTenantContext } = require("../middleware/tenantContext");
 const { emitSecurityEvent, maskCode } = require("../lib/security/events");
+const { normalizeTenantIdentifier, resolveTenantUuid } = require("../services/tenantIdentifierService");
 const jackpotService = require("../services/jackpotService");
 const { buildLimiter } = require("../utils/rateLimit");
 
@@ -198,7 +199,10 @@ async function touchPlayerSession(userId, req) {
 router.post("/login", playerLoginLimiter, async (req, res) => {
   const code = (req.body?.code || req.body?.userCode || "").trim();
   const pin = (req.body?.pin || "").trim();
-  let tenantId = req.body?.tenantId || req.body?.tenant_id || null;
+  const requestedTenantIdentifier = normalizeTenantIdentifier(
+    req.body?.tenantId || req.body?.tenant_id || null
+  );
+  let tenantId = null;
 
   if (!code || !pin) {
     emitSecurityEvent({
@@ -224,6 +228,10 @@ router.post("/login", playerLoginLimiter, async (req, res) => {
   try {
     const locked = await ensureNotLocked(code, res);
     if (locked) return;
+
+    if (requestedTenantIdentifier) {
+      tenantId = await resolveTenantUuid(requestedTenantIdentifier);
+    }
 
     const resolvedTenantId = await resolveTenantForVoucher(code, pin);
     if (resolvedTenantId) {

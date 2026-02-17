@@ -18,6 +18,7 @@ const { hashToken } = require("../utils/token");
 const { getLock, recordFailure, recordSuccess } = require("../utils/lockout");
 const { emitSecurityEvent } = require("../lib/security/events");
 const { buildLimiter } = require("../utils/rateLimit");
+const { normalizeTenantIdentifier, resolveTenantUuid } = require("../services/tenantIdentifierService");
 
 const loginLimiter = buildLimiter({ windowMs: 15 * 60 * 1000, max: 20, message: "Too many login attempts" });
 const adminLoginLimiter = buildLimiter({ windowMs: 15 * 60 * 1000, max: 20, message: "Too many admin login attempts" });
@@ -80,17 +81,23 @@ async function handleLockoutCheck({ subjectType, subjectId, tenantId, res }) {
  */
 router.post('/register', async (req, res) => {
   try {
-    const { email, username, password, role, tenantId } = req.body;
+    const { email, username, password, role, tenantId: rawTenantId } = req.body;
+    const requestedTenantIdentifier = normalizeTenantIdentifier(rawTenantId);
 
-    if (!email || !username || !password || !tenantId) {
+    if (!email || !username || !password || !requestedTenantIdentifier) {
       return res
         .status(400)
         .json({ error: 'email, username, password, and tenantId are required' });
     }
 
+    const tenantId = await resolveTenantUuid(requestedTenantIdentifier);
+    if (!tenantId) {
+      return res.status(400).json({ error: "Invalid tenantId" });
+    }
+
     const lock = await handleLockoutCheck({
       subjectType: "staff_admin",
-      subjectId: `${tenantId}:${emailOrUsername.toLowerCase()}`,
+      subjectId: `${tenantId}:${String(username || email).toLowerCase()}`,
       tenantId,
       res,
     });
@@ -150,12 +157,18 @@ router.post('/register', async (req, res) => {
  */
 router.post('/login', loginLimiter, async (req, res) => {
   try {
-    const { emailOrUsername, password, tenantId } = req.body;
+    const { emailOrUsername, password, tenantId: rawTenantId } = req.body;
+    const requestedTenantIdentifier = normalizeTenantIdentifier(rawTenantId);
 
-    if (!emailOrUsername || !password || !tenantId) {
+    if (!emailOrUsername || !password || !requestedTenantIdentifier) {
       return res
         .status(400)
         .json({ error: 'emailOrUsername, password, and tenantId are required' });
+    }
+
+    const tenantId = await resolveTenantUuid(requestedTenantIdentifier);
+    if (!tenantId) {
+      return res.status(401).json({ error: "Invalid credentials" });
     }
 
     const lockHit = await handleLockoutCheck({
@@ -178,6 +191,7 @@ router.post('/login', loginLimiter, async (req, res) => {
       async () => {
         const user = await User.findOne({
           where: {
+            tenantId,
             [Op.or]: [
               { email: emailOrUsername },
               { username: emailOrUsername },

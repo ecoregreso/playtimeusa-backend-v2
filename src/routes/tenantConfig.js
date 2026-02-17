@@ -12,6 +12,7 @@ const {
   normalizeOutcomeMode,
   buildOutcomeModeOptions,
 } = require("../services/outcomeModeService");
+const { normalizeTenantIdentifier, resolveTenantUuid } = require("../services/tenantIdentifierService");
 
 const router = express.Router();
 
@@ -86,18 +87,14 @@ function buildThemeOptions(themeSettings) {
   };
 }
 
-function normalizeTenantId(value) {
-  if (!value) return null;
-  const trimmed = String(value).trim();
-  return trimmed || null;
-}
-
-function resolveTenantId(req) {
+async function resolveTenantId(req) {
   if (req.staff?.role !== "owner") {
     return req.staff?.tenantId || null;
   }
   const raw = req.query?.tenantId || req.body?.tenantId || req.staff?.tenantId || null;
-  return normalizeTenantId(raw);
+  const tenantIdentifier = normalizeTenantIdentifier(raw);
+  if (!tenantIdentifier) return null;
+  return resolveTenantUuid(tenantIdentifier);
 }
 
 function requireVoucherPolicyWriteRole(req, res, next) {
@@ -122,7 +119,7 @@ async function getSystemConfig() {
 
 router.get("/", staffAuth, async (req, res) => {
   try {
-    const tenantId = resolveTenantId(req);
+    const tenantId = await resolveTenantId(req);
     const system = await getSystemConfig();
     const tenant = tenantId ? await getJson(tenantConfigKey(tenantId), {}) : {};
     const tenantNormalized = { ...(tenant || {}) };
@@ -156,7 +153,7 @@ router.get("/", staffAuth, async (req, res) => {
 
 router.get("/voucher-win-cap/options", staffAuth, async (req, res) => {
   try {
-    const tenantId = resolveTenantId(req);
+    const tenantId = await resolveTenantId(req);
     const system = await getSystemConfig();
     const tenant = tenantId ? await getJson(tenantConfigKey(tenantId), {}) : {};
     const effective = { ...system, ...(tenant || {}) };
@@ -175,7 +172,7 @@ router.get("/voucher-win-cap/options", staffAuth, async (req, res) => {
 
 router.get("/outcome-mode/options", staffAuth, async (req, res) => {
   try {
-    const tenantId = resolveTenantId(req);
+    const tenantId = await resolveTenantId(req);
     const system = await getSystemConfig();
     const tenant = tenantId ? await getJson(tenantConfigKey(tenantId), {}) : {};
     const effective = { ...system, ...(tenant || {}) };
@@ -198,7 +195,7 @@ router.get("/outcome-mode/options", staffAuth, async (req, res) => {
 
 router.get("/theme/options", staffAuth, async (req, res) => {
   try {
-    const tenantId = resolveTenantId(req);
+    const tenantId = await resolveTenantId(req);
     const system = await getSystemConfig();
     const tenant = tenantId ? await getJson(tenantConfigKey(tenantId), {}) : {};
     const effective = { ...system, ...(tenant || {}) };
@@ -221,7 +218,7 @@ router.get("/theme/options", staffAuth, async (req, res) => {
 
 router.put("/outcome-mode", staffAuth, requireVoucherPolicyWriteRole, async (req, res) => {
   try {
-    const tenantId = resolveTenantId(req);
+    const tenantId = await resolveTenantId(req);
     if (!tenantId && req.staff?.role !== "owner") {
       return res.status(400).json({ ok: false, error: "Tenant ID is required" });
     }
@@ -269,7 +266,7 @@ router.put("/outcome-mode", staffAuth, requireVoucherPolicyWriteRole, async (req
 
 async function upsertThemeSettings(req, res) {
   try {
-    const tenantId = resolveTenantId(req);
+    const tenantId = await resolveTenantId(req);
     if (!tenantId && req.staff?.role !== "owner") {
       return res.status(400).json({ ok: false, error: "Tenant ID is required" });
     }
@@ -324,7 +321,7 @@ router.put("/theme-settings", staffAuth, requireVoucherPolicyWriteRole, upsertTh
 
 router.put("/voucher-win-cap/policy", staffAuth, requireVoucherPolicyWriteRole, async (req, res) => {
   try {
-    const tenantId = resolveTenantId(req);
+    const tenantId = await resolveTenantId(req);
     if (!tenantId && req.staff?.role !== "owner") {
       return res.status(400).json({ ok: false, error: "Tenant ID is required" });
     }

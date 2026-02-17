@@ -3,6 +3,7 @@ const { QueryTypes } = require("sequelize");
 const { sequelize } = require("../db");
 const { staffAuth } = require("../middleware/staffAuth");
 const { emitSecurityEvent } = require("../lib/security/events");
+const { normalizeTenantIdentifier, resolveTenantUuid } = require("../services/tenantIdentifierService");
 
 const router = express.Router();
 
@@ -81,25 +82,29 @@ function requireOwner(req, res, next) {
 }
 
 router.get("/alerts", staffAuth, requireOwner, async (req, res) => {
-  const status = String(req.query.status || "open").trim() || "open";
-  const tenantId = req.query.tenantId ? String(req.query.tenantId).trim() : null;
-  const limit = parseLimit(req.query.limit, 50, 200);
-  const cursor = decodeCursor(req.query.cursor);
-
-  const clauses = ["status = :status"];
-  const replacements = { status };
-  if (tenantId) {
-    clauses.push("tenant_id = :tenantId");
-    replacements.tenantId = tenantId;
-  }
-
-  if (cursor) {
-    clauses.push("(ts < :cursorTs OR (ts = :cursorTs AND id < :cursorId))");
-    replacements.cursorTs = cursor.ts;
-    replacements.cursorId = cursor.id;
-  }
-
   try {
+    const status = String(req.query.status || "open").trim() || "open";
+    const tenantIdentifier = normalizeTenantIdentifier(req.query.tenantId || null);
+    const tenantId = tenantIdentifier ? await resolveTenantUuid(tenantIdentifier) : null;
+    if (tenantIdentifier && !tenantId) {
+      return res.json({ ok: true, alerts: [], nextCursor: null });
+    }
+    const limit = parseLimit(req.query.limit, 50, 200);
+    const cursor = decodeCursor(req.query.cursor);
+
+    const clauses = ["status = :status"];
+    const replacements = { status };
+    if (tenantId) {
+      clauses.push("tenant_id = :tenantId");
+      replacements.tenantId = tenantId;
+    }
+
+    if (cursor) {
+      clauses.push("(ts < :cursorTs OR (ts = :cursorTs AND id < :cursorId))");
+      replacements.cursorTs = cursor.ts;
+      replacements.cursorId = cursor.id;
+    }
+
     const rows = await sequelize.query(
       `
         SELECT *
@@ -173,33 +178,37 @@ router.post("/alerts/:id/close", staffAuth, requireOwner, async (req, res) => {
 });
 
 router.get("/events", staffAuth, requireOwner, async (req, res) => {
-  const tenantId = req.query.tenantId ? String(req.query.tenantId).trim() : null;
-  const severityMin = req.query.severityMin ? Number(req.query.severityMin) : null;
-  const eventType = req.query.eventType ? String(req.query.eventType).trim() : null;
-  const limit = parseLimit(req.query.limit, 100, 500);
-  const cursor = decodeCursor(req.query.cursor);
-
-  const clauses = ["1=1"];
-  const replacements = {};
-  if (tenantId) {
-    clauses.push("tenant_id = :tenantId");
-    replacements.tenantId = tenantId;
-  }
-  if (Number.isFinite(severityMin)) {
-    clauses.push("severity >= :severityMin");
-    replacements.severityMin = severityMin;
-  }
-  if (eventType) {
-    clauses.push("event_type = :eventType");
-    replacements.eventType = eventType;
-  }
-  if (cursor) {
-    clauses.push("(ts < :cursorTs OR (ts = :cursorTs AND id < :cursorId))");
-    replacements.cursorTs = cursor.ts;
-    replacements.cursorId = cursor.id;
-  }
-
   try {
+    const tenantIdentifier = normalizeTenantIdentifier(req.query.tenantId || null);
+    const tenantId = tenantIdentifier ? await resolveTenantUuid(tenantIdentifier) : null;
+    if (tenantIdentifier && !tenantId) {
+      return res.json({ ok: true, events: [], nextCursor: null });
+    }
+    const severityMin = req.query.severityMin ? Number(req.query.severityMin) : null;
+    const eventType = req.query.eventType ? String(req.query.eventType).trim() : null;
+    const limit = parseLimit(req.query.limit, 100, 500);
+    const cursor = decodeCursor(req.query.cursor);
+
+    const clauses = ["1=1"];
+    const replacements = {};
+    if (tenantId) {
+      clauses.push("tenant_id = :tenantId");
+      replacements.tenantId = tenantId;
+    }
+    if (Number.isFinite(severityMin)) {
+      clauses.push("severity >= :severityMin");
+      replacements.severityMin = severityMin;
+    }
+    if (eventType) {
+      clauses.push("event_type = :eventType");
+      replacements.eventType = eventType;
+    }
+    if (cursor) {
+      clauses.push("(ts < :cursorTs OR (ts = :cursorTs AND id < :cursorId))");
+      replacements.cursorTs = cursor.ts;
+      replacements.cursorId = cursor.id;
+    }
+
     const rows = await sequelize.query(
       `
         SELECT *

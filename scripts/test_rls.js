@@ -26,10 +26,10 @@ async function run() {
   const app = require("../src/server");
 
   const tenantA = await withOwnerContext(() =>
-    Tenant.create({ name: "Tenant A", status: "active" })
+    Tenant.create({ name: "Tenant A", status: "active", externalId: "tenant-a" })
   );
   const tenantB = await withOwnerContext(() =>
-    Tenant.create({ name: "Tenant B", status: "active" })
+    Tenant.create({ name: "Tenant B", status: "active", externalId: "tenant-b" })
   );
 
   const passwordHash = await bcrypt.hash("test-pass", 10);
