@@ -584,11 +584,11 @@ router.post(
       if (order.status !== STATUS.APPROVED) {
         return res.status(400).json({ ok: false, error: "Order not approved yet" });
       }
-      if (req.staff?.role !== "owner" && order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
-        return res.status(403).json({ ok: false, error: "Forbidden" });
+      if (req.staff?.role === "owner") {
+        return res.status(403).json({ ok: false, error: "Stage 3 confirmation is tenant-side only" });
       }
-      if (!isRequester(order, req.staff)) {
-        return res.status(403).json({ ok: false, error: "Only the requesting tenant can confirm payment" });
+      if (order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
+        return res.status(403).json({ ok: false, error: "Forbidden" });
       }
       const confirmationCode = (req.body?.confirmationCode || "").trim();
       if (!confirmationCode) {
