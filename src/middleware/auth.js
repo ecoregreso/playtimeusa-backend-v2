@@ -24,38 +24,6 @@ async function requireAuth(req, res, next) {
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 
-  req.user = {
-    id: payload.sub,
-    role: payload.role,
-    tenantId: payload.tenantId || null,
-    distributorId: payload.distributorId || null,
-  };
-  req.auth = {
-    userId: payload.sub,
-    role: payload.role,
-    tenantId: payload.tenantId || null,
-    distributorId: payload.distributorId || null,
-  };
-
-  try {
-    const user = await User.findByPk(payload.sub, {
-      attributes: ["id", "role", "isActive", "tenantId"],
-    });
-    if (!user) {
-      return res.status(401).json({ error: "Invalid user" });
-    }
-    if (!user.isActive) {
-      return res.status(403).json({ error: "Account disabled" });
-    }
-    if (String(user.role || "") !== String(payload.role || "")) {
-      return res.status(403).json({ error: "Role mismatch" });
-    }
-    req.user.tenantId = user.tenantId || req.user.tenantId || null;
-    req.auth.tenantId = req.user.tenantId;
-  } catch (err) {
-    return res.status(500).json({ error: "Failed to validate user account" });
-  }
-
   try {
     return await initTenantContext(
       req,
@@ -65,12 +33,49 @@ async function requireAuth(req, res, next) {
         role: payload.role,
         userId: payload.sub,
         distributorId: payload.distributorId || null,
+        allowMissingTenant: payload.role === "owner",
       },
-      () => next()
+      async () => {
+        const user = await User.findByPk(payload.sub, {
+          attributes: ["id", "role", "isActive", "tenantId"],
+        });
+        if (!user) {
+          return res.status(401).json({ error: "Invalid user" });
+        }
+        if (!user.isActive) {
+          return res.status(403).json({ error: "Account disabled" });
+        }
+        if (String(user.role || "") !== String(payload.role || "")) {
+          return res.status(403).json({ error: "Role mismatch" });
+        }
+        if (
+          payload.tenantId &&
+          user.tenantId &&
+          String(payload.tenantId) !== String(user.tenantId)
+        ) {
+          return res.status(403).json({ error: "Tenant mismatch" });
+        }
+
+        req.user = {
+          id: user.id,
+          role: user.role,
+          tenantId: user.tenantId || payload.tenantId || null,
+          distributorId: payload.distributorId || null,
+        };
+        req.auth = {
+          userId: user.id,
+          role: user.role,
+          tenantId: req.user.tenantId,
+          distributorId: payload.distributorId || null,
+        };
+
+        return next();
+      }
     );
   } catch (err) {
+    console.error("[AUTH] requireAuth error:", err.message || err);
     const status = err.status || 500;
-    return res.status(status).json({ error: err.message || "Tenant context error" });
+    return res.status(status).json({ error: err.message || "Failed to validate user account" });
   }
 }
 
