@@ -365,22 +365,22 @@ if (process.env.DB_SYNC === "true") {
   console.log("[DB] Sequelize sync disabled. Run npm run migrate.");
 }
 
-// Purge messages older than 24h every hour
-const PURGE_MS = 24 * 60 * 60 * 1000;
-setInterval(async () => {
-  try {
-    const cutoff = new Date(Date.now() - PURGE_MS);
-    await StaffMessage.destroy({
-      where: {
-        createdAt: { [Op.lt]: cutoff },
-      },
-    });
-  } catch (err) {
-    if (NODE_ENV !== "test") {
+// Purge messages older than 24h every hour.
+if (NODE_ENV !== "test") {
+  const PURGE_MS = 24 * 60 * 60 * 1000;
+  setInterval(async () => {
+    try {
+      const cutoff = new Date(Date.now() - PURGE_MS);
+      await StaffMessage.destroy({
+        where: {
+          createdAt: { [Op.lt]: cutoff },
+        },
+      });
+    } catch (err) {
       console.warn("[MSG] purge error:", err.message || err);
     }
-  }
-}, 60 * 60 * 1000);
+  }, 60 * 60 * 1000);
+}
 
 // Default error handler
 app.use((err, req, res, next) => {

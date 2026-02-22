@@ -7,8 +7,6 @@ const {
   OwnerSetting,
   StaffUser,
   StaffMessage,
-  TenantWallet,
-  CreditLedger,
 } = require("../models");
 const { sequelize } = require("../db");
 const { sendPushToStaffIds } = require("../utils/push");
@@ -212,6 +210,10 @@ function buildReceiptCode(orderId, now = new Date()) {
     .slice(0, 8)
     .toUpperCase();
   return `PO-${stamp}-${suffix || "NA"}`;
+}
+
+function isExplicitVerification(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
 }
 
 // GET default owner BTC address
@@ -537,6 +539,12 @@ router.post(
           error: "Only owners can approve and send Stage 2 wallet instructions",
         });
       }
+      if (!isExplicitVerification(req.body?.ownerStage2Verified)) {
+        return res.status(400).json({
+          ok: false,
+          error: "Stage 2 requires owner verification before approval",
+        });
+      }
 
       const ownerBtcAddress =
         (req.body?.ownerBtcAddress || "").trim() || (await getOwnerAddress(order.tenantId));
@@ -594,6 +602,12 @@ router.post(
       if (req.staff?.role === "owner") {
         return res.status(403).json({ ok: false, error: "Stage 3 confirmation is tenant-side only" });
       }
+      if (!isExplicitVerification(req.body?.tenantStage3Verified)) {
+        return res.status(400).json({
+          ok: false,
+          error: "Stage 3 requires tenant verification before confirmation",
+        });
+      }
       if (order.tenantId && req.staff?.tenantId && order.tenantId !== req.staff.tenantId) {
         return res.status(403).json({ ok: false, error: "Forbidden" });
       }
@@ -642,7 +656,7 @@ router.post(
   }
 );
 
-// OWNER: Stage 4 - issue exact credit amount requested by tenant
+// OWNER: Stage 4 - verify manual exact credit completion in owner tools
 router.post(
   "/:id/issue-credit",
   staffAuth,
@@ -684,6 +698,11 @@ router.post(
           err.status = 400;
           throw err;
         }
+        if (!isExplicitVerification(req.body?.ownerStage4ManualCreditVerified)) {
+          const err = new Error("STAGE4_VERIFICATION_REQUIRED");
+          err.status = 400;
+          throw err;
+        }
 
         const creditCents = toCents(order.funAmount);
         if (!Number.isFinite(creditCents) || creditCents <= 0) {
@@ -691,53 +710,22 @@ router.post(
           err.status = 400;
           throw err;
         }
-        const requestedCreditCents =
+        const requestedCreditCentsRaw =
           req.body?.creditedAmountCents != null
             ? Number(req.body.creditedAmountCents)
             : req.body?.creditedAmountFun != null
             ? toCents(req.body.creditedAmountFun)
             : null;
+        if (requestedCreditCentsRaw == null || Number.isNaN(requestedCreditCentsRaw)) {
+          const err = new Error("STAGE4_CREDIT_AMOUNT_REQUIRED");
+          err.status = 400;
+          throw err;
+        }
+        const requestedCreditCents = Number(requestedCreditCentsRaw);
         if (
-          requestedCreditCents != null &&
-          (Number.isNaN(requestedCreditCents) || Number(requestedCreditCents) !== Number(creditCents))
+          Number.isNaN(requestedCreditCents) ||
+          Number(requestedCreditCents) !== Number(creditCents)
         ) {
-          const err = new Error("CREDIT_AMOUNT_MISMATCH");
-          err.status = 400;
-          throw err;
-        }
-
-        let wallet = await TenantWallet.findOne({
-          where: { tenantId: order.tenantId },
-          transaction: t,
-          lock: t.LOCK.UPDATE,
-        });
-        if (!wallet) {
-          wallet = await TenantWallet.create(
-            { tenantId: order.tenantId, balanceCents: 0, currency: "FUN" },
-            { transaction: t }
-          );
-        }
-        const walletBefore = Number(wallet.balanceCents || 0);
-        const walletAfter = walletBefore + creditCents;
-        if (walletAfter - walletBefore !== creditCents) {
-          const err = new Error("CREDIT_AMOUNT_MISMATCH");
-          err.status = 400;
-          throw err;
-        }
-        wallet.balanceCents = walletAfter;
-        await wallet.save({ transaction: t });
-
-        const creditLedger = await CreditLedger.create(
-          {
-            tenantId: order.tenantId,
-            actorUserId: req.staff?.id || null,
-            actionType: "purchase_order_credit",
-            amountCents: creditCents,
-            memo: `purchase_order:${order.id}`,
-          },
-          { transaction: t }
-        );
-        if (Number(creditLedger.amountCents || 0) !== Number(creditCents)) {
           const err = new Error("CREDIT_AMOUNT_MISMATCH");
           err.status = 400;
           throw err;
@@ -766,13 +754,14 @@ router.post(
           sender: req.staff?.username || "owner",
           senderRole: req.staff?.role || "owner",
           body:
-            `Stage 4 verified by owner: exact credit amount issued to tenant wallet ` +
-            `(${formatFunAmountFromCents(creditCents)} FUN). Stage 5 final paid/receipt step still required.`,
+            `Stage 4 verified by owner: owner confirmed manual tenant credit of ` +
+            `${formatFunAmountFromCents(creditCents)} FUN in owner portal tools. ` +
+            `Stage 5 paid/receipt finalization is now unlocked.`,
           tenantId: order.tenantId,
           transaction: t,
         });
 
-        return { order, wallet };
+        return { order };
       })(transaction);
 
       await notifyOrderStatusByEmail({
@@ -813,6 +802,18 @@ router.post(
       }
       if (err?.message === "PAYMENT_NOT_CONFIRMED") {
         return res.status(400).json({ ok: false, error: "Payment confirmation is missing" });
+      }
+      if (err?.message === "STAGE4_VERIFICATION_REQUIRED") {
+        return res.status(400).json({
+          ok: false,
+          error: "Owner must verify manual Stage 4 credit completion before continuing",
+        });
+      }
+      if (err?.message === "STAGE4_CREDIT_AMOUNT_REQUIRED") {
+        return res.status(400).json({
+          ok: false,
+          error: "Stage 4 requires the owner-verified credited amount",
+        });
       }
       if (err?.message === "INVALID_FUN_AMOUNT") {
         return res.status(400).json({ ok: false, error: "Invalid FUN amount on order" });
@@ -871,6 +872,11 @@ router.post(
           err.status = 400;
           throw err;
         }
+        if (!isExplicitVerification(req.body?.ownerStage5PaidVerified)) {
+          const err = new Error("STAGE5_VERIFICATION_REQUIRED");
+          err.status = 400;
+          throw err;
+        }
 
         const creditCents = toCents(order.funAmount);
         if (!Number.isFinite(creditCents) || creditCents <= 0) {
@@ -878,15 +884,21 @@ router.post(
           err.status = 400;
           throw err;
         }
-        const requestedCreditCents =
+        const requestedCreditCentsRaw =
           req.body?.creditedAmountCents != null
             ? Number(req.body.creditedAmountCents)
             : req.body?.creditedAmountFun != null
             ? toCents(req.body.creditedAmountFun)
             : null;
+        if (requestedCreditCentsRaw == null || Number.isNaN(requestedCreditCentsRaw)) {
+          const err = new Error("STAGE5_CREDIT_AMOUNT_REQUIRED");
+          err.status = 400;
+          throw err;
+        }
+        const requestedCreditCents = Number(requestedCreditCentsRaw);
         if (
-          requestedCreditCents != null &&
-          (Number.isNaN(requestedCreditCents) || Number(requestedCreditCents) !== Number(creditCents))
+          Number.isNaN(requestedCreditCents) ||
+          Number(requestedCreditCents) !== Number(creditCents)
         ) {
           const err = new Error("CREDIT_AMOUNT_MISMATCH");
           err.status = 400;
@@ -994,6 +1006,18 @@ router.post(
       }
       if (err?.message === "PAYMENT_NOT_CONFIRMED") {
         return res.status(400).json({ ok: false, error: "Payment confirmation is missing" });
+      }
+      if (err?.message === "STAGE5_VERIFICATION_REQUIRED") {
+        return res.status(400).json({
+          ok: false,
+          error: "Owner must verify Stage 5 paid completion before finalization",
+        });
+      }
+      if (err?.message === "STAGE5_CREDIT_AMOUNT_REQUIRED") {
+        return res.status(400).json({
+          ok: false,
+          error: "Stage 5 requires verified credited amount confirmation",
+        });
       }
       if (err?.message === "CREDIT_NOT_ISSUED") {
         return res.status(400).json({

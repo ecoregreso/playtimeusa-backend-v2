@@ -1,5 +1,13 @@
 DROP INDEX IF EXISTS ledger_events_action_event_unique;
 
+ALTER TABLE IF EXISTS tenants
+  ADD COLUMN IF NOT EXISTS external_id TEXT;
+
+UPDATE tenants
+SET external_id = id::text
+WHERE external_id IS NULL
+   OR btrim(external_id) = '';
+
 DO $$
 BEGIN
   IF to_regclass('staff_users') IS NOT NULL THEN
@@ -14,7 +22,9 @@ DECLARE
 BEGIN
   SELECT id INTO default_tenant FROM tenants WHERE name = 'Default' LIMIT 1;
   IF default_tenant IS NULL THEN
-    INSERT INTO tenants (name, status) VALUES ('Default', 'active') RETURNING id INTO default_tenant;
+    INSERT INTO tenants (name, status, external_id)
+    VALUES ('Default', 'active', gen_random_uuid()::text)
+    RETURNING id INTO default_tenant;
   END IF;
 
   FOR table_name IN SELECT unnest(ARRAY[

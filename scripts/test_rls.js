@@ -1,8 +1,8 @@
 const assert = require("assert");
-const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const request = require("supertest");
 const { sequelize } = require("../src/db");
+const { signAccessToken } = require("../src/utils/jwt");
 const {
   Tenant,
   StaffUser,
@@ -11,13 +11,11 @@ const {
   Voucher,
 } = require("../src/models");
 
-const STAFF_JWT_SECRET = process.env.STAFF_JWT_SECRET || "test-staff";
-
 async function withOwnerContext(fn) {
   return sequelize.transaction(async (t) => {
     await sequelize.query("SET LOCAL app.role = 'owner'", { transaction: t });
     await sequelize.query("SET LOCAL app.user_id = 'owner-test'", { transaction: t });
-    await sequelize.query("SET LOCAL app.tenant_id = NULL", { transaction: t });
+    await sequelize.query("RESET app.tenant_id", { transaction: t });
     return fn(t);
   });
 }
@@ -126,34 +124,31 @@ async function run() {
     )
   );
 
-  const tokenA = jwt.sign(
+  const tokenA = signAccessToken(
     {
-      sub: staffA.id,
-      type: "staff",
+      id: staffA.id,
       role: staffA.role,
       tenantId: tenantA.id,
+      distributorId: staffA.distributorId || null,
     },
-    STAFF_JWT_SECRET,
     { expiresIn: "1h" }
   );
-  const tokenB = jwt.sign(
+  const tokenB = signAccessToken(
     {
-      sub: staffB.id,
-      type: "staff",
+      id: staffB.id,
       role: staffB.role,
       tenantId: tenantB.id,
+      distributorId: staffB.distributorId || null,
     },
-    STAFF_JWT_SECRET,
     { expiresIn: "1h" }
   );
-  const ownerToken = jwt.sign(
+  const ownerToken = signAccessToken(
     {
-      sub: ownerStaff.id,
-      type: "staff",
+      id: ownerStaff.id,
       role: ownerStaff.role,
       tenantId: ownerStaff.tenantId || null,
+      distributorId: ownerStaff.distributorId || null,
     },
-    STAFF_JWT_SECRET,
     { expiresIn: "1h" }
   );
 

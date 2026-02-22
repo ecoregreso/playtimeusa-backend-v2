@@ -4,7 +4,8 @@ const cls = require('cls-hooked');
 const namespace = cls.createNamespace('sequelize');
 Sequelize.useCLS(namespace);
 
-const connectionString = process.env.DATABASE_URL;
+const isTestEnv = process.env.NODE_ENV === 'test' || !!process.env.JEST_WORKER_ID;
+const connectionString = process.env.DATABASE_URL || (isTestEnv ? 'sqlite://:memory:' : null);
 
 if (!connectionString) {
   console.error('[DB] DATABASE_URL is not set in .env');
